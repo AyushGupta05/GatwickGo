@@ -132,6 +132,11 @@ export default function CameraPage() {
     setCameraReady(false);
   }, []);
 
+  const goToModel = useCallback(() => {
+    stopCamera();
+    window.location.assign("/model");
+  }, [stopCamera]);
+
   const startCamera = useCallback(
     async (mode: "environment" | "user" = facingMode) => {
       try {
@@ -276,13 +281,14 @@ export default function CameraPage() {
               clearInterval(scanIntervalRef.current);
               scanIntervalRef.current = null;
             }
-            // Start 30-minute session
+            // Start 5-minute session
             startTicketSession(ticket);
             setActiveTicket(ticket);
             setTimeout(() => {
               setStep("capture");
               setScanStatus("");
-            }, 800);
+              goToModel();
+            }, 300);
           } else {
             setScanStatus(
               "❌ Invalid ticket — not a valid Gatwick GO boarding pass"
@@ -303,7 +309,7 @@ export default function CameraPage() {
         scanIntervalRef.current = null;
       }
     };
-  }, [step, cameraReady]);
+  }, [step, cameraReady, goToModel]);
 
   // --------------- Plane Capture with OCR (Step 2) ---------------
 
@@ -464,7 +470,8 @@ export default function CameraPage() {
             setTimeout(() => {
               setStep("capture");
               setScanStatus("");
-            }, 800);
+              goToModel();
+            }, 300);
           } else {
             setScanStatus(
               "QR code found but it's not a valid Gatwick GO boarding pass."
@@ -487,7 +494,7 @@ export default function CameraPage() {
     };
 
     img.src = objectUrl;
-  }, []);
+  }, [goToModel]);
 
   const handleFileInputChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -714,7 +721,7 @@ export default function CameraPage() {
                   Try Again
                 </button>
                 <button
-                  onClick={() => router.push("/")}
+                  onClick={() => router.push("/home")}
                   className="bg-white/10 text-white px-6 py-3 rounded-full text-sm font-medium"
                 >
                   Go Back

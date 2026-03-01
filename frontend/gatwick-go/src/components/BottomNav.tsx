@@ -18,19 +18,18 @@ const tabs: Tab[] = [
     label: "Camera",
     href: "/camera",
     isActive: (pathname: string) =>
-      pathname === "/camera" ||
-      pathname.startsWith("/camera") ||
-      pathname === "/model/camera",
+      pathname === "/camera" || pathname.startsWith("/camera"),
     icon: (active: boolean) => (
       <svg
-        width="24"
-        height="24"
+        className="block h-6 w-6 shrink-0"
         viewBox="0 0 24 24"
         fill="none"
         stroke={active ? "#003DA5" : "#9CA3AF"}
         strokeWidth="2"
         strokeLinecap="round"
         strokeLinejoin="round"
+        preserveAspectRatio="xMidYMid meet"
+        aria-hidden="true"
       >
         <circle cx="12" cy="12" r="8" />
         <circle cx="12" cy="12" r="2" />
@@ -46,14 +45,15 @@ const tabs: Tab[] = [
     href: "/collection",
     icon: (active: boolean) => (
       <svg
-        width="24"
-        height="24"
+        className="block h-6 w-6 shrink-0"
         viewBox="0 0 24 24"
         fill="none"
         stroke={active ? "#003DA5" : "#9CA3AF"}
         strokeWidth="2"
         strokeLinecap="round"
         strokeLinejoin="round"
+        preserveAspectRatio="xMidYMid meet"
+        aria-hidden="true"
       >
         <rect x="3" y="3" width="7" height="7" rx="1" />
         <rect x="14" y="3" width="7" height="7" rx="1" />
@@ -64,17 +64,20 @@ const tabs: Tab[] = [
   },
   {
     label: "Home",
-    href: "/",
+    href: "/home",
+    isActive: (pathname: string) =>
+      pathname === "/home" || pathname === "/" || pathname.startsWith("/home"),
     icon: (active: boolean) => (
       <svg
-        width="26"
-        height="26"
+        className="block h-6 w-6 shrink-0"
         viewBox="0 0 24 24"
         fill="none"
         stroke={active ? "#003DA5" : "#9CA3AF"}
         strokeWidth="2"
         strokeLinecap="round"
         strokeLinejoin="round"
+        preserveAspectRatio="xMidYMid meet"
+        aria-hidden="true"
       >
         <path d="M3 12L12 3l9 9" />
         <path d="M5 10v10h14V10" />
@@ -87,14 +90,15 @@ const tabs: Tab[] = [
     href: "/shop",
     icon: (active: boolean) => (
       <svg
-        width="24"
-        height="24"
+        className="block h-6 w-6 shrink-0"
         viewBox="0 0 24 24"
         fill="none"
         stroke={active ? "#003DA5" : "#9CA3AF"}
         strokeWidth="2"
         strokeLinecap="round"
         strokeLinejoin="round"
+        preserveAspectRatio="xMidYMid meet"
+        aria-hidden="true"
       >
         <path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z" />
         <line x1="3" y1="6" x2="21" y2="6" />
@@ -116,8 +120,8 @@ export default function BottomNav() {
   }
 
   return (
-    <nav className="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-[430px] bg-nav-bg border-t border-gray-200 safe-bottom z-50">
-      <div className="flex items-center justify-around h-16 px-2">
+    <nav className="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-[430px] bg-nav-bg/95 border-t border-gray-200 shadow-[0_-4px_12px_rgba(0,0,0,0.05)] safe-bottom z-50">
+      <div className="flex items-center justify-around h-14 px-4">
         {tabs.map((tab) => {
           const isActive = tab.isActive
             ? tab.isActive(pathname)
@@ -126,7 +130,7 @@ export default function BottomNav() {
             : pathname.startsWith(tab.href);
 
           const linkClasses =
-            "flex flex-col items-center justify-center min-w-[64px] min-h-[44px] gap-1";
+            "flex flex-col items-center justify-center min-w-[56px] min-h-[44px] gap-1 leading-none shrink-0";
 
           const labelClasses = `text-[10px] font-medium ${
             isActive ? "text-gatwick-blue" : "text-gray-400"

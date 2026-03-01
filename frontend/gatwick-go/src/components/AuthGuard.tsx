@@ -21,6 +21,13 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
   );
 
   useEffect(() => {
+    // If already authenticated and on a public page (signin/callback),
+    // bump them to home.
+    if (!loading && user && isPublic) {
+      router.replace("/home");
+      return;
+    }
+
     if (!loading && !user && !isPublic) {
       router.replace("/signin");
     }

@@ -77,7 +77,7 @@ Gatwick-GO/
 ### 2. Frontend Integration
 - Next.js source code moved from `imported_model_zip/Gatwick-GO-main/gatwick-go/` → `frontend/gatwick-go/`
 - No longer imports; now a fully integrated part of the project
-- Exported/built static files served via Flask at `/model` route
+- Exported/built static files served via Flask on clean routes like `/model`, `/home`, `/camera`, and `/shop`
 
 ### 3. Path Updates
 - **config.py**: Updated paths for sandbox feed and generated output to use absolute paths

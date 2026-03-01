@@ -1,13 +1,28 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
+import { AUTH_ON } from "@/lib/auth";
+import { useRouter } from "next/navigation";
 
 export default function SignInPage() {
   const [email, setEmail] = useState("");
   const [sent, setSent] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const router = useRouter();
+
+  // If already logged in, go straight home
+  useEffect(() => {
+    if (!AUTH_ON) return;
+    const check = async () => {
+      const { data } = await supabase.auth.getSession();
+      if (data.session) {
+        router.replace("/home");
+      }
+    };
+    check();
+  }, [router]);
 
   const sendLink = async () => {
     if (!email.trim()) return;

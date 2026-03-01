@@ -22,7 +22,7 @@ export default function TicketsPage() {
         </div>
         <p className="text-white/60 text-xs">
           Display one of these QR codes on another screen, then scan it with the
-          camera to validate your ticket. Each scan starts a 30-minute session.
+          camera to validate your ticket. Each scan starts a 5-minute session.
         </p>
       </div>
 
@@ -58,7 +58,7 @@ export default function TicketsPage() {
           <li>Display one of these QR codes on another device or print it</li>
           <li>Go to the Camera page (tap the capture button on the home screen)</li>
           <li>Point your camera at the QR code — it auto-detects</li>
-          <li>Once validated, you have <strong className="text-white/80">30 minutes</strong> to capture planes</li>
+          <li>Once validated, you have <strong className="text-white/80">5 minutes</strong> to capture planes</li>
           <li>During the session, you can capture as many planes as you want without re-scanning</li>
         </ol>
       </div>

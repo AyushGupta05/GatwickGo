@@ -12,7 +12,7 @@ from pathlib import Path
 import pathlib
 from typing import Any, Dict, Optional
 
-from flask import Flask, render_template, request, jsonify, send_from_directory
+from flask import Flask, redirect, render_template, request, jsonify, send_from_directory
 
 from camera_burst import classify_burst_consensus
 
@@ -153,7 +153,13 @@ def _persist_sighting_to_supabase(
 
 @app.route("/")
 def index():
-    """Serve the main page with webcam interface."""
+    """Send the root URL to the Gemini capture page."""
+    return redirect("/model")
+
+
+@app.route("/model")
+def model_capture_page():
+    """Serve the Gemini-powered capture page after ticket validation."""
     return render_template(
         "index.html",
         default_observer_lat=config.AIRPORT_COORDS[0],
@@ -164,17 +170,23 @@ def index():
     )
 
 
-@app.route("/model")
-@app.route("/model/<path:subpath>")
+@app.route("/home")
+@app.route("/camera")
+@app.route("/collection")
+@app.route("/shop")
+@app.route("/signin")
+@app.route("/tickets")
+@app.route("/auth/<path:subpath>")
+@app.route("/_next/<path:subpath>")
 def model_ui(subpath: str = ""):
     """
-    Serve the exported model UI (static Next.js build) without touching core app flows.
-    Handles nested client routes and _next assets under /model.
+    Serve the exported model UI on clean top-level routes.
+    Handles page routes like /home and static assets under /_next.
     """
     root = MODEL_STATIC_DIR.resolve()
 
     # Normalize and guard against traversal
-    safe_sub = (subpath or "index.html").lstrip("/")
+    safe_sub = request.path.lstrip("/")
     if ".." in Path(safe_sub).parts:
         return jsonify({"error": "Invalid path"}), 400
 
@@ -184,7 +196,7 @@ def model_ui(subpath: str = ""):
     if requested.exists() and requested.is_file():
         return send_from_directory(str(root), requested.relative_to(root).as_posix())
 
-    # Route-specific HTML fallback (e.g., /model/camera -> camera.html)
+    # Route-specific HTML fallback (e.g., /camera -> camera.html)
     html_candidate = root / f"{safe_sub}.html"
     if html_candidate.exists():
         return send_from_directory(str(root), html_candidate.relative_to(root).as_posix())
@@ -192,10 +204,6 @@ def model_ui(subpath: str = ""):
     # Directory index.html (safety)
     if requested.is_dir() and (requested / "index.html").exists():
         return send_from_directory(str(root), (requested / "index.html").relative_to(root).as_posix())
-
-    # Default entry when hitting /model or /model/
-    if safe_sub in ("", "index.html"):
-        return send_from_directory(str(root), "index.html")
 
     # Fallback 404
     if (root / "404.html").exists():
