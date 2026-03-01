@@ -1,98 +1,35 @@
-Aircraft Radar Demo
-===================
+# ✈️ Gatwick GO!
 
-What you get
-- Gemini-based airline + family classifier (burst voting).
-- Replayable sandbox feed around LGW with 15 moving flights (t0–t25).
-- Live provider hooks (OpenSky ready, FR24 stub) behind a common API.
-- Matcher that fuses classification + location to pick the most likely flight.
+Gatwick GO! is a mobile-first web experience that turns airport gate waiting time into a fun, interactive game. While waiting for their flight, passengers can spot and “capture” real planes outside the terminal windows, earn points, and unlock airport and airline sponsored rewards.
 
-Project Structure
-```
-Gatwick-GO/
-├── backend/               # Python Flask backend
-│   ├── app.py            # Main Flask application
-│   ├── config.py         # Configuration (paths, settings)
-│   ├── camera_burst.py   # Burst capture logic
-│   ├── gemini_classifier.py  # Gemini API integration
-│   ├── flight_feed.py    # Flight data providers
-│   ├── flight_matcher.py # Flight matching algorithm
-│   ├── enrichment.py     # Data enrichment
-│   ├── aircraft_detection_pipeline.py
-│   ├── templates/        # Flask HTML templates
-│   ├── static/          # Static assets (CSS, JS, model UI)
-│   ├── sandbox_feed/    # Test flight data snapshots
-│   ├── tools/           # Utility scripts
-│   ├── testimages/      # Test images
-│   └── requirements.txt # Python dependencies
-│
-└── frontend/             # Next.js frontend (optional)
-    └── gatwick-go/      # Next.js project
-```
+Designed specifically for **15–30 minutes of gate waiting**, Gatwick GO! makes the airport experience more engaging, memorable, and rewarding.
 
-Installation & Setup
-====================
+---
 
-1. Install backend dependencies:
-   ```
-   cd backend
-   pip install -r requirements.txt
-   ```
+## 🧠 The Idea
 
-2. Set environment variables:
-   - `GEMINI_API_KEY` (required): Get from https://aistudio.google.com/app/apikeys
-   - Optional: `OPENSKY_USERNAME`, `OPENSKY_PASSWORD` (for live flight data)
+Passengers already spend time looking out the window at planes while waiting to board. Gatwick GO! gamifies this natural behavior by letting users capture aircraft, collect points based on airline and destination rarity, and work toward rewards such as lounge perks, vouchers, or airline upgrades.
 
-3. Run the application:
-   ```
-   cd backend
-   python app.py
-   ```
-   Then open http://localhost:5000
+The experience is lightweight, fast to join, and requires **no app download**.
 
-Configuration
-=============
+---
 
-Edit `backend/config.py` to customize:
-- Airport location and search radius
-- Burst capture settings
-- Flight feed mode (SANDBOX, LIVE, OPENSKY)
-- Confidence thresholds
+## 🚀 Features
 
-API Quick Reference
-===================
+- Mobile-first web app (no installation required)
+- Email sign-in using Supabase
+- Plane “capture” mechanic inspired by games like Pokemon GO
+- Points and rarity system (common vs rare vs shiny flights)
+- Reward progression system for airport & airline perks
+- Built to scale with airline and airport partnerships
 
-- POST `/api/classify`
-  - body: `{ images: [...base64...], mode: "SANDBOX" | "OPENSKY" | "FR24", location: {lat, lon, radius_km}, match: true }`
-  - returns: classifier result + `match` (best flight) + `feed` metadata.
+---
 
-Flight Feed Modes
-================
+## 🛠️ How we built it
 
-- **SANDBOX** (default): Uses test snapshots from `backend/sandbox_feed/`; updates every 5 seconds
-- **OPENSKY**: Connects to OpenSky Network (requires credentials)
-- **FR24**: FlightRadar24 stub (ready for paid API integration)
+- **Frontend:** Next.js (App Router), React
+- **Backend & Auth:** Supabase (email magic-link authentication)
+- **Database:** Supabase Postgres (users, points, captures)
+- **Hosting:** Local development (deployable to Vercel)
 
-Regenerate Sandbox Feed
-=======================
-
-```
-cd backend
-python tools/generate_sandbox_feed.py
-```
-
-Testing
-=======
-
-Test local images with the classifier:
-```
-cd backend
-python test_local_images.py
-python test_local_images.py --dir custom_folder
-```
-
-Verify system setup:
-```
-cd backend
-python test_system.py
-```
+The system is designed so authentication and data storage are production-ready, while the game logic can be iterated on rapidly.
