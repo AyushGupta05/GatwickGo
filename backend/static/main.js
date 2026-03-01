@@ -437,8 +437,12 @@ async function classifyFrames(frames) {
         const rewardSuffix = Number.isFinite(result.points_awarded)
             ? ` and +${result.points_awarded} points saved`
             : '';
+        const storageWarnings = Array.isArray(result.storage_warnings) ? result.storage_warnings : [];
+        if (storageWarnings.length > 0) {
+            console.warn('Persistence warnings:', storageWarnings);
+        }
         showStatus(
-            `Classification successful (${result.frames_processed} frames processed${rewardSuffix})`,
+            `Classification successful (${result.frames_processed} frames processed${rewardSuffix}${storageWarnings.length ? ', capture history table missing' : ''})`,
             'success'
         );
     } catch (error) {

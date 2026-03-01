@@ -92,27 +92,37 @@ def _best_flight_from_match(match: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     return flight if isinstance(flight, dict) else {}
 
 
-def _sync_profile_points(
+def _resolve_family_code(
     supabase_client,
-    user_id: str,
-    points_total: int,
-) -> Optional[str]:
-    """Best-effort sync for legacy UI that still reads points from profiles."""
+    family_code: Optional[str],
+) -> tuple[Optional[str], Optional[str]]:
+    """
+    Validate the classifier family value against aircraft_families.code when possible.
+    Returns (resolved_code, warning_message).
+    """
+    if not isinstance(family_code, str):
+        return None, None
+
+    normalized = family_code.strip()
+    if not normalized or normalized == "UNKNOWN":
+        return None, None
+
     try:
-        profile_resp = (
+        family_resp = (
             supabase_client
-            .table("profiles")
-            .update({
-                "points": points_total,
-            })
-            .eq("id", user_id)
+            .table("aircraft_families")
+            .select("code")
+            .eq("code", normalized)
+            .limit(1)
             .execute()
         )
-        if getattr(profile_resp, "error", None):
-            return str(profile_resp.error)
+        if getattr(family_resp, "error", None):
+            return normalized, f"Failed to validate aircraft family against aircraft_families: {family_resp.error}"
+        if _first_row(family_resp):
+            return normalized, None
+        return normalized, f"Aircraft family `{normalized}` was not found in aircraft_families.code; stored it anyway in user_stats.collected_families."
     except Exception as exc:
-        return str(exc)
-    return None
+        return normalized, f"Failed to validate aircraft family against aircraft_families: {exc}"
 
 
 def _persist_capture_for_user(
@@ -130,9 +140,13 @@ def _persist_capture_for_user(
     fallback_reason: Optional[str],
 ) -> Dict[str, Any]:
     """
-    Persist one capture, one reward ledger row, and update the user's summary stats.
+    Persist the classify result to the schema that actually exists:
+    - user_stats.points_total
+    - user_stats.collected_families
+
+    The attached schema has no per-user airline capture table, so airline is returned
+    in the API response but not written to Supabase.
     """
-    timestamp = _utc_now_iso()
     best_flight = _best_flight_from_match(match)
 
     captured_airline = result.get("airline")
@@ -143,7 +157,10 @@ def _persist_capture_for_user(
     if not isinstance(captured_model, str) or not captured_model:
         captured_model = str(best_flight.get("aircraft_family") or "UNKNOWN")
 
-    flight_number = best_flight.get("flight_number") or best_flight.get("callsign")
+    resolved_family_code, family_warning = _resolve_family_code(
+        supabase_client=supabase_client,
+        family_code=captured_model,
+    )
 
     current_stats_resp = (
         supabase_client
@@ -162,58 +179,16 @@ def _persist_capture_for_user(
         if existing_row
         else GEMINI_CAPTURE_POINTS
     )
-    next_families = _merge_unique_strings(existing_row.get("collected_families") if existing_row else [], captured_model)
-
-    capture_payload: Dict[str, Any] = {
-        "user_id": user_id,
-        "airline": captured_airline,
-        "aircraft_family": captured_model,
-        "flight_number": flight_number,
-        "capture_points": GEMINI_CAPTURE_POINTS,
-        "confidence": result.get("confidence"),
-        "phase": result.get("phase"),
-        "phase_confidence": result.get("phase_confidence"),
-        "result": result,
-        "match": match,
-        "feed": feed,
-        "enrichment": enrichment,
-        "observer_lat": observer[0],
-        "observer_lon": observer[1],
-        "radius_km": radius_km,
-        "frames_processed": frames_processed,
-        "requested_mode": requested_mode,
-        "effective_mode": effective_mode,
-        "fallback_reason": fallback_reason,
-        "created_at": timestamp,
-    }
-    capture_payload = {k: v for k, v in capture_payload.items() if v is not None}
-    capture_resp = (
-        supabase_client
-        .table("user_captures")
-        .insert(capture_payload)
-        .execute()
+    next_families = _merge_unique_strings(
+        existing_row.get("collected_families") if existing_row else [],
+        resolved_family_code,
     )
-    if getattr(capture_resp, "error", None):
-        raise RuntimeError(capture_resp.error)
-    capture_row = _first_row(capture_resp)
-    capture_id = capture_row.get("id") if capture_row else None
-
-    ledger_payload: Dict[str, Any] = {
-        "user_id": user_id,
-        "capture_id": capture_id,
-        "points": GEMINI_CAPTURE_POINTS,
-        "reason": "gemini_capture",
-        "created_at": timestamp,
-    }
-    ledger_payload = {k: v for k, v in ledger_payload.items() if v is not None}
-    ledger_resp = (
-        supabase_client
-        .table("reward_ledger")
-        .insert(ledger_payload)
-        .execute()
+    storage_warnings: list[str] = []
+    if family_warning:
+        storage_warnings.append(family_warning)
+    storage_warnings.append(
+        "The current Supabase schema has no table for per-user captured airlines. Only user_stats.points_total and user_stats.collected_families are persisted."
     )
-    if getattr(ledger_resp, "error", None):
-        raise RuntimeError(ledger_resp.error)
 
     if existing_row:
         update_resp = (
@@ -244,20 +219,13 @@ def _persist_capture_for_user(
         if getattr(insert_resp, "error", None):
             raise RuntimeError(insert_resp.error)
 
-    profile_sync_error = _sync_profile_points(
-        supabase_client=supabase_client,
-        user_id=user_id,
-        points_total=next_points_total,
-    )
-
     return {
-        "capture_id": capture_id,
         "captured_airline": captured_airline,
-        "captured_model": captured_model,
+        "captured_model": resolved_family_code or captured_model,
         "points_awarded": GEMINI_CAPTURE_POINTS,
         "points_total": next_points_total,
         "collected_families": next_families,
-        "profile_sync_error": profile_sync_error,
+        "storage_warnings": storage_warnings,
     }
 
 
@@ -539,8 +507,6 @@ def classify_endpoint():
                 effective_mode=effective_mode,
                 fallback_reason=fallback_reason,
             )
-            if persist_info.get("capture_id"):
-                response_payload["capture_id"] = persist_info["capture_id"]
             if persist_info.get("captured_airline"):
                 response_payload["captured_airline"] = persist_info["captured_airline"]
             if persist_info.get("captured_model"):
@@ -549,8 +515,8 @@ def classify_endpoint():
                 response_payload["points_awarded"] = persist_info["points_awarded"]
             if persist_info.get("points_total") is not None:
                 response_payload["points_total"] = persist_info["points_total"]
-            if persist_info.get("profile_sync_error"):
-                response_payload["profile_sync_error"] = persist_info["profile_sync_error"]
+            if persist_info.get("storage_warnings"):
+                response_payload["storage_warnings"] = persist_info["storage_warnings"]
         except Exception as exc:
             return jsonify({"success": False, "error": f"Failed to persist capture: {exc}"}), 500
 
@@ -584,7 +550,7 @@ def fact_endpoint():
 
 @app.route("/api/user/progress", methods=["GET"])
 def user_progress_endpoint():
-    """Return persisted rewards summary and recent captures for the signed-in user."""
+    """Return persisted progress for the signed-in user using the current schema."""
     token = _extract_bearer_token(request.headers.get("Authorization"))
     if not token:
         return jsonify({"success": False, "error": "Authorization bearer token required"}), 401
@@ -615,42 +581,48 @@ def user_progress_endpoint():
             "collected_families": [],
             "updated_at": None,
         }
+        collected_codes = stats_row.get("collected_families") if isinstance(stats_row.get("collected_families"), list) else []
 
-        captures_resp = (
+        families_resp = (
             supabase_client
-            .table("user_captures")
-            .select("id, airline, aircraft_family, flight_number, capture_points, confidence, phase, created_at")
-            .eq("user_id", user_id)
-            .limit(100)
+            .table("aircraft_families")
+            .select("code, display_name, rarity, created_at")
             .execute()
         )
-        if getattr(captures_resp, "error", None):
-            raise RuntimeError(captures_resp.error)
-        captures = getattr(captures_resp, "data", None) or []
-        if not isinstance(captures, list):
-            captures = []
-        captures.sort(key=lambda row: str(row.get("created_at") or ""), reverse=True)
+        storage_warnings = [
+            "The current schema does not contain a per-user airline capture history table. Progress is persisted in user_stats only."
+        ]
 
-        ledger_resp = (
-            supabase_client
-            .table("reward_ledger")
-            .select("id, points, reason, created_at, capture_id")
-            .eq("user_id", user_id)
-            .limit(100)
-            .execute()
-        )
-        if getattr(ledger_resp, "error", None):
-            raise RuntimeError(ledger_resp.error)
-        reward_ledger = getattr(ledger_resp, "data", None) or []
-        if not isinstance(reward_ledger, list):
-            reward_ledger = []
-        reward_ledger.sort(key=lambda row: str(row.get("created_at") or ""), reverse=True)
+        families = getattr(families_resp, "data", None) or []
+        if getattr(families_resp, "error", None):
+            storage_warnings.append(
+                f"Could not read aircraft_families lookup table: {families_resp.error}"
+            )
+            families = []
+        if not isinstance(families, list):
+            families = []
+
+        family_by_code: Dict[str, Dict[str, Any]] = {}
+        for row in families:
+            if isinstance(row, dict) and isinstance(row.get("code"), str):
+                family_by_code[row["code"]] = row
+
+        collected_family_details = []
+        for code in collected_codes:
+            if not isinstance(code, str):
+                continue
+            collected_family_details.append(
+                family_by_code.get(
+                    code,
+                    {"code": code, "display_name": code, "rarity": None, "created_at": None},
+                )
+            )
 
         return jsonify({
             "success": True,
             "stats": stats_row,
-            "captures": captures,
-            "reward_ledger": reward_ledger,
+            "collected_family_details": collected_family_details,
+            "storage_warnings": storage_warnings,
         })
     except Exception as exc:
         return jsonify({"success": False, "error": f"Failed to load user progress: {exc}"}), 500
