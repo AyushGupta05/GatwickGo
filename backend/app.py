@@ -53,33 +53,33 @@ def model_ui(subpath: str = ""):
     """
     root = MODEL_STATIC_DIR.resolve()
 
-    # Basic path traversal guard
-    requested = (root / subpath).resolve()
-    if root not in requested.parents and requested != root:
+    # Normalize and guard against traversal
+    safe_sub = (subpath or "index.html").lstrip("/")
+    if ".." in Path(safe_sub).parts:
         return jsonify({"error": "Invalid path"}), 400
 
-    # Default entry
-    if subpath in ("", "/"):
-        return send_from_directory(root, "index.html")
+    requested = root / safe_sub
 
-    # Direct file hit (assets, _next, etc.)
+    # If the exact path exists (files under _next, static assets, etc.)
     if requested.exists() and requested.is_file():
-        rel = requested.relative_to(root)
-        return send_from_directory(root, str(rel))
+        return send_from_directory(str(root), requested.relative_to(root).as_posix())
 
-    # Route-specific HTML (e.g., /model/camera -> camera.html)
-    html_candidate = root / f"{subpath}.html"
+    # Route-specific HTML fallback (e.g., /model/camera -> camera.html)
+    html_candidate = root / f"{safe_sub}.html"
     if html_candidate.exists():
-        return send_from_directory(root, f"{subpath}.html")
+        return send_from_directory(str(root), html_candidate.relative_to(root).as_posix())
 
-    # Folder with index.html (shouldn't be needed for Next export, but keep)
+    # Directory index.html (safety)
     if requested.is_dir() and (requested / "index.html").exists():
-        rel_dir = requested.relative_to(root)
-        return send_from_directory(requested, "index.html")
+        return send_from_directory(str(root), (requested / "index.html").relative_to(root).as_posix())
 
-    # Fallback to static 404 if present
+    # Default entry when hitting /model or /model/
+    if safe_sub in ("", "index.html"):
+        return send_from_directory(str(root), "index.html")
+
+    # Fallback 404
     if (root / "404.html").exists():
-        return send_from_directory(root, "404.html"), 404
+        return send_from_directory(str(root), "404.html"), 404
 
     return jsonify({"error": "Not found"}), 404
 
@@ -386,17 +386,17 @@ def server_error(e):
 if __name__ == "__main__":
     # Verify API key is set
     if not os.getenv("GEMINI_API_KEY"):
-        print("⚠️  WARNING: GEMINI_API_KEY environment variable not set!")
-        print("PowerShell (persistent): setx GEMINI_API_KEY \"your-api-key\"")
-        print("PowerShell (current session): $env:GEMINI_API_KEY=\"your-api-key\"")
+        print("WARNING: GEMINI_API_KEY environment variable not set!")
+        print('PowerShell (persistent): setx GEMINI_API_KEY "your-api-key"')
+        print('PowerShell (current session): $env:GEMINI_API_KEY="your-api-key"')
         print()
 
     print("=" * 60)
-    print("🚀 Aircraft Detection Web Server")
+    print("Aircraft Detection Web Server")
     print("=" * 60)
     print()
-    print("🌐 Starting server...")
-    print("📱 Open http://localhost:5000 in your browser")
+    print("Starting server...")
+    print("Open http://localhost:5000 in your browser")
     print()
     print("Press Ctrl+C to stop the server")
     print()
