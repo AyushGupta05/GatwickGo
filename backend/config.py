@@ -4,6 +4,9 @@ Safe version — no hardcoded API keys.
 """
 
 import os
+from local_env import load_local_env
+
+load_local_env()
 
 # ============================================================================
 # CAMERA BURST SETTINGS

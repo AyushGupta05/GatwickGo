@@ -2,48 +2,66 @@
 
 import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
-import { AUTH_ON } from "@/lib/auth";
 import { useRouter } from "next/navigation";
 
 export default function SignInPage() {
   const [email, setEmail] = useState("");
-  const [sent, setSent] = useState(false);
+  const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [loadingAction, setLoadingAction] = useState<"signin" | "signup" | null>(null);
   const router = useRouter();
 
-  // If already logged in, go straight home
   useEffect(() => {
-    if (!AUTH_ON) return;
     const check = async () => {
       const { data } = await supabase.auth.getSession();
       if (data.session) {
         router.replace("/home");
       }
     };
-    check();
+    void check();
   }, [router]);
 
-  const sendLink = async () => {
-    if (!email.trim()) return;
+  const handleAuth = async (isSignup: boolean) => {
+    const normalizedEmail = email.trim();
+    if (!normalizedEmail || !password) {
+      setError("Enter email and password.");
+      return;
+    }
+
     setError(null);
-    setLoading(true);
+    setLoadingAction(isSignup ? "signup" : "signin");
 
-    const { error } = await supabase.auth.signInWithOtp({
-      email,
-      options: {
-        emailRedirectTo: `${window.location.origin}/auth/callback`,
-      },
-    });
+    try {
+      if (isSignup) {
+        const { error: signUpError } = await supabase.auth.signUp({
+          email: normalizedEmail,
+          password,
+        });
+        if (signUpError) {
+          throw signUpError;
+        }
+      }
 
-    setLoading(false);
-    if (error) setError(error.message);
-    else setSent(true);
+      const { error: signInError } = await supabase.auth.signInWithPassword({
+        email: normalizedEmail,
+        password,
+      });
+      if (signInError) {
+        throw signInError;
+      }
+
+      router.replace("/home");
+    } catch (authError) {
+      const message =
+        authError instanceof Error ? authError.message : "Authentication failed.";
+      setError(message);
+    } finally {
+      setLoadingAction(null);
+    }
   };
 
   return (
     <div className="flex flex-col items-center justify-center min-h-dvh px-6">
-      {/* Logo / Branding */}
       <div className="flex items-center gap-2 mb-2">
         <div className="w-2 h-10 bg-gatwick-red rounded-full" />
         <h1 className="text-3xl font-bold text-gatwick-dark tracking-tight">
@@ -54,70 +72,59 @@ export default function SignInPage() {
         Spot planes, collect cards, earn rewards
       </p>
 
-      {/* Card */}
       <div className="w-full max-w-sm bg-white rounded-2xl shadow-lg p-6">
-        {sent ? (
-          <div className="flex flex-col items-center text-center gap-3">
-            <div className="w-16 h-16 rounded-full bg-gatwick-light flex items-center justify-center text-3xl">
-              ✉️
-            </div>
-            <h2 className="text-lg font-bold text-gatwick-dark">
-              Check your email
-            </h2>
-            <p className="text-sm text-gray-500">
-              We sent a sign-in link to <strong>{email}</strong>. Tap the link
-              in the email to continue.
-            </p>
-            <button
-              onClick={() => {
-                setSent(false);
-                setEmail("");
-              }}
-              className="mt-2 text-sm text-gatwick-blue underline"
-            >
-              Use a different email
-            </button>
-          </div>
-        ) : (
-          <>
-            <h2 className="text-lg font-bold text-gatwick-dark mb-1">
-              Sign in
-            </h2>
-            <p className="text-sm text-gray-500 mb-4">
-              We&apos;ll email you a one-tap sign-in link.
-            </p>
+        <h2 className="text-lg font-bold text-gatwick-dark mb-1">Log in</h2>
+        <p className="text-sm text-gray-500 mb-4">
+          Use your email and password.
+        </p>
 
-            <input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && sendLink()}
-              placeholder="you@example.com"
-              inputMode="email"
-              autoComplete="email"
-              className="w-full px-4 py-3 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-gatwick-blue/40 focus:border-gatwick-blue transition"
-            />
+        <div className="flex flex-col gap-3">
+          <input
+            type="email"
+            value={email}
+            onChange={(event) => setEmail(event.target.value)}
+            placeholder="you@example.com"
+            inputMode="email"
+            autoComplete="email"
+            className="w-full px-4 py-3 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-gatwick-blue/40 focus:border-gatwick-blue transition"
+          />
 
-            <button
-              onClick={sendLink}
-              disabled={loading || !email.trim()}
-              className="w-full mt-3 py-3 rounded-xl bg-gatwick-blue text-white font-semibold text-sm disabled:opacity-50 transition active:scale-[0.98]"
-            >
-              {loading ? "Sending…" : "Send magic link"}
-            </button>
+          <input
+            type="password"
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                void handleAuth(false);
+              }
+            }}
+            placeholder="Password"
+            autoComplete="current-password"
+            className="w-full px-4 py-3 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-gatwick-blue/40 focus:border-gatwick-blue transition"
+          />
+        </div>
 
-            {error && (
-              <p className="mt-3 text-sm text-gatwick-red text-center">
-                {error}
-              </p>
-            )}
-          </>
+        <div className="mt-3 grid grid-cols-2 gap-3">
+          <button
+            onClick={() => void handleAuth(false)}
+            disabled={loadingAction !== null}
+            className="py-3 rounded-xl bg-gatwick-blue text-white font-semibold text-sm disabled:opacity-50 transition active:scale-[0.98]"
+          >
+            {loadingAction === "signin" ? "Logging in..." : "Log in"}
+          </button>
+          <button
+            onClick={() => void handleAuth(true)}
+            disabled={loadingAction !== null}
+            className="py-3 rounded-xl border border-gatwick-blue text-gatwick-blue font-semibold text-sm disabled:opacity-50 transition active:scale-[0.98]"
+          >
+            {loadingAction === "signup" ? "Creating..." : "Sign up"}
+          </button>
+        </div>
+
+        {error && (
+          <p className="mt-3 text-sm text-gatwick-red text-center">{error}</p>
         )}
       </div>
-
-      <p className="text-xs text-gray-400 mt-6">
-        No password required — just your email ✈️
-      </p>
     </div>
   );
 }

@@ -8,6 +8,9 @@ caller-provided JWT so that RLS is enforced per-user.
 from __future__ import annotations
 
 import os
+from local_env import load_local_env
+
+load_local_env()
 try:
     from supabase import Client, create_client
 except ImportError:  # Fallback when supabase-py is unavailable
@@ -106,8 +109,29 @@ def supabase_as_user(jwt: str) -> Client:
                 return SimpleNamespace(data=resp.json(), error=None)
             return SimpleNamespace(data=None, error=resp.text)
 
+    class _RpcCall:
+        def __init__(self, name: str, params: Optional[Dict[str, Any]] = None):
+            self.name = name
+            self.params = params or {}
+
+        def execute(self) -> Any:
+            resp = requests.post(
+                f"{rest_url}/rpc/{self.name}",
+                headers=default_headers,
+                json=self.params,
+                timeout=15,
+            )
+            if resp.ok:
+                if not resp.text:
+                    return SimpleNamespace(data=[], error=None)
+                return SimpleNamespace(data=resp.json(), error=None)
+            return SimpleNamespace(data=None, error=resp.text)
+
     class _Client:
         def table(self, name: str) -> _Query:
             return _Query(name)
+
+        def rpc(self, name: str, params: Optional[Dict[str, Any]] = None) -> _RpcCall:
+            return _RpcCall(name, params)
 
     return _Client()  # type: ignore

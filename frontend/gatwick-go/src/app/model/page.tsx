@@ -3,8 +3,10 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import {
+  addPointsAmount,
   getTicketSession,
   getSessionTimeRemaining,
+  upsertCollectionCard,
   clearTicketSession,
   TicketSession,
 } from "@/lib/store";
@@ -32,6 +34,35 @@ export default function ModelPage() {
     sync();
     const timer = setInterval(sync, 1000);
     return () => clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    const handleSessionProgress = (event: MessageEvent) => {
+      const message = event.data;
+      if (!message || message.type !== "gatwick-go-session-progress") {
+        return;
+      }
+
+      const payload = message.payload ?? {};
+      const card = payload.card;
+      const awardedPoints =
+        typeof payload.pointsAwarded === "number" ? payload.pointsAwarded : 0;
+
+      if (card && typeof card === "object" && typeof card.id === "string") {
+        const isNewCard = upsertCollectionCard(card);
+        if (isNewCard && awardedPoints > 0) {
+          addPointsAmount(awardedPoints);
+        }
+        return;
+      }
+
+      if (awardedPoints > 0) {
+        addPointsAmount(awardedPoints);
+      }
+    };
+
+    window.addEventListener("message", handleSessionProgress);
+    return () => window.removeEventListener("message", handleSessionProgress);
   }, []);
 
   const endSession = () => {

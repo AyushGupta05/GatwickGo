@@ -2,10 +2,11 @@
 
 import { useEffect, useState } from "react";
 import { QRCodeSVG } from "qrcode.react";
-import { getAvailableRewards } from "@/lib/data";
-import type { Reward } from "@/lib/data";
-import { getPoints, redeemReward, getRedeemedRewards } from "@/lib/store";
-import { useAuth, AUTH_ON } from "@/lib/auth";
+import { getAvailableRewards, type Reward } from "@/lib/data";
+import { getPoints, getRedeemedRewards, redeemReward } from "@/lib/store";
+import { useAuth } from "@/lib/auth";
+
+const PRESET_REWARDS = getAvailableRewards();
 
 interface ActiveReward {
   id: string;
@@ -19,45 +20,51 @@ export default function ShopPage() {
   const [redeemed, setRedeemed] = useState<Record<string, string>>({});
   const [justRedeemed, setJustRedeemed] = useState<string | null>(null);
   const [activeReward, setActiveReward] = useState<ActiveReward | null>(null);
-  const { signOut, email } = useAuth();
-  const rewards = getAvailableRewards();
+  const [error, setError] = useState<string | null>(null);
+  const { signOut } = useAuth();
+  const rewards = PRESET_REWARDS;
 
   useEffect(() => {
     setPoints(getPoints());
     setRedeemed(getRedeemedRewards());
   }, []);
 
-  const handleRedeem = (reward: Reward) => {
-    const code = redeemReward(reward.id, reward.pointsCost);
-    if (code) {
-      setPoints(getPoints());
-      setRedeemed(getRedeemedRewards());
-      setJustRedeemed(reward.id);
-      setTimeout(() => setJustRedeemed(null), 2000);
-      setActiveReward({
-        id: reward.id,
-        name: reward.name,
-        icon: reward.icon,
-        code,
-      });
+  const openRewardModal = (reward: Reward, promoCode: string) => {
+    setActiveReward({
+      id: reward.id,
+      name: reward.name,
+      icon: reward.icon,
+      code: promoCode,
+    });
+  };
+
+  const handleRedeem = async (reward: Reward) => {
+    setError(null);
+    const promoCode = redeemReward(reward.id, reward.pointsCost);
+    if (!promoCode) {
+      setError("Not enough points to redeem this reward.");
+      return;
     }
+
+    const nextPoints = getPoints();
+    const nextRedeemed = getRedeemedRewards();
+
+    setPoints(nextPoints);
+    setRedeemed(nextRedeemed);
+    setJustRedeemed(reward.id);
+    window.setTimeout(() => setJustRedeemed(null), 2000);
+    openRewardModal(reward, promoCode);
   };
 
   const handleViewCode = (reward: Reward) => {
-    const code = redeemed[reward.id];
-    if (code) {
-      setActiveReward({
-        id: reward.id,
-        name: reward.name,
-        icon: reward.icon,
-        code,
-      });
+    const promoCode = redeemed[reward.id];
+    if (promoCode) {
+      openRewardModal(reward, promoCode);
     }
   };
 
   return (
     <div className="flex flex-col gap-4 px-4 pt-4">
-      {/* Header */}
       <header className="flex items-center justify-between">
         <h1 className="text-2xl font-bold text-gatwick-dark">Rewards Shop</h1>
         <div className="flex items-center gap-3">
@@ -73,15 +80,20 @@ export default function ShopPage() {
         </div>
       </header>
 
-      {/* Info */}
       <p className="text-gray-500 text-sm">
         Spend your hard-earned points on exclusive rewards!
       </p>
 
-      {/* Rewards List */}
+      {error && (
+        <p className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs text-gatwick-red">
+          {error}
+        </p>
+      )}
+
       <div className="flex flex-col gap-3 pb-4">
         {rewards.map((reward) => {
-          const isRedeemed = reward.id in redeemed;
+          const promoCode = redeemed[reward.id];
+          const isRedeemed = Boolean(promoCode);
           const canAfford = points >= reward.pointsCost;
           const wasJustRedeemed = justRedeemed === reward.id;
 
@@ -116,12 +128,12 @@ export default function ShopPage() {
                     </span>
                     {isRedeemed ? (
                       <span className="text-green-600 font-bold text-xs bg-green-100 px-3 py-1.5 rounded-full">
-                        {wasJustRedeemed ? "🎉 Redeemed!" : "📱 View Code"}
+                        {wasJustRedeemed ? "Redeemed!" : "View Code"}
                       </span>
                     ) : (
                       <button
-                        onClick={(e) => {
-                          e.stopPropagation();
+                        onClick={(event) => {
+                          event.stopPropagation();
                           handleRedeem(reward);
                         }}
                         disabled={!canAfford}
@@ -137,7 +149,6 @@ export default function ShopPage() {
                   </div>
                 </div>
               </div>
-              {/* Category tag */}
               <div className="mt-2">
                 <span className="text-[10px] bg-gatwick-light text-gatwick-blue px-2 py-0.5 rounded-full font-medium">
                   {reward.category}
@@ -148,7 +159,6 @@ export default function ShopPage() {
         })}
       </div>
 
-      {/* QR Code / Promo Code Modal */}
       {activeReward && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-6"
@@ -156,9 +166,8 @@ export default function ShopPage() {
         >
           <div
             className="bg-white rounded-2xl w-full max-w-sm p-6 flex flex-col items-center gap-5 shadow-2xl animate-in"
-            onClick={(e) => e.stopPropagation()}
+            onClick={(event) => event.stopPropagation()}
           >
-            {/* Reward header */}
             <div className="flex items-center gap-3">
               <div className="w-12 h-12 rounded-xl bg-gatwick-light flex items-center justify-center text-2xl">
                 {activeReward.icon}
@@ -167,16 +176,12 @@ export default function ShopPage() {
                 <p className="font-bold text-gatwick-dark text-base">
                   {activeReward.name}
                 </p>
-                <p className="text-green-600 text-xs font-medium">
-                  ✅ Redeemed
-                </p>
+                <p className="text-green-600 text-xs font-medium">Claimed</p>
               </div>
             </div>
 
-            {/* Divider */}
             <div className="w-full h-px bg-gray-200" />
 
-            {/* QR Code */}
             <div className="bg-white p-4 rounded-xl border-2 border-dashed border-gray-200">
               <QRCodeSVG
                 value={activeReward.code}
@@ -187,7 +192,6 @@ export default function ShopPage() {
               />
             </div>
 
-            {/* Promo Code */}
             <div className="text-center">
               <p className="text-[11px] text-gray-400 font-medium uppercase tracking-wider mb-1.5">
                 Your Promo Code
@@ -197,13 +201,11 @@ export default function ShopPage() {
               </p>
             </div>
 
-            {/* Hint */}
             <p className="text-[11px] text-gray-400 text-center leading-relaxed">
               Show this QR code or provide the promo code at the counter to
               claim your reward.
             </p>
 
-            {/* Close button */}
             <button
               onClick={() => setActiveReward(null)}
               className="w-full bg-gatwick-blue text-white py-3 rounded-xl font-bold text-sm active:bg-blue-800 transition-colors"

@@ -98,6 +98,16 @@ def _best_family_from_pred(pred: Dict) -> Tuple[str, float]:
     return fam, conf
 
 
+def _best_model_from_pred(pred: Dict) -> Tuple[str, float]:
+    """Extract aircraft model/confidence regardless of schema."""
+    model = pred.get("aircraft_model", "UNKNOWN") or "UNKNOWN"
+    try:
+        conf = float(pred.get("model_confidence", pred.get("family_confidence", pred.get("confidence", 0.0))))
+    except Exception:
+        conf = 0.0
+    return model, conf
+
+
 def _best_phase_from_pred(pred: Dict) -> Tuple[str, float]:
     """Extract phase/confidence if present."""
     phase = str(pred.get("phase", "unknown") or "unknown").lower()
@@ -124,17 +134,21 @@ def _aggregate_predictions(preds: List[Dict], qualities: List[float], frame_indi
     if not preds:
         return {
             "airline": "UNKNOWN",
+            "aircraft_model": "UNKNOWN",
             "aircraft_family": "UNKNOWN",
             "phase": "unknown",
             "phase_confidence": 0.0,
             "confidence": 0.0,
+            "model_confidence": 0.0,
             "uncertainty": 1.0,
             "frames_used": 0,
             "cues": [],
             "votes": [],
+            "model_votes": [],
             "family_votes": [],
             "phase_votes": [],
             "confidence_level": "low",
+            "model_confidence_level": "low",
             "family_confidence_level": "low",
             "low_confidence": True,
         }
@@ -142,9 +156,11 @@ def _aggregate_predictions(preds: List[Dict], qualities: List[float], frame_indi
     q_norm = _normalize_quality(qualities)
 
     airline_votes: Dict[str, float] = {}
+    model_votes: Dict[str, float] = {}
     family_votes: Dict[str, float] = {}
     phase_votes: Dict[str, float] = {}
     total_airline_weight = 0.0
+    total_model_weight = 0.0
     total_family_weight = 0.0
     total_phase_weight = 0.0
     total_raw_weight = 0.0
@@ -156,6 +172,7 @@ def _aggregate_predictions(preds: List[Dict], qualities: List[float], frame_indi
 
     for pred, q_weight, frame_idx in zip(preds, q_norm, frame_indices):
         airline, a_conf = _best_airline_from_pred(pred)
+        model, m_conf = _best_model_from_pred(pred)
         family, f_conf = _best_family_from_pred(pred)
         phase, p_conf = _best_phase_from_pred(pred)
 
@@ -173,17 +190,21 @@ def _aggregate_predictions(preds: List[Dict], qualities: List[float], frame_indi
 
         # soften (but do not discard) low-confidence votes so we can still surface best guesses
         airline_penalty = 0.6 if a_conf < MIN_CONFIDENCE_AIRLINE else 1.0
+        model_penalty = 0.7 if m_conf < MIN_CONFIDENCE_FAMILY else 1.0
         family_penalty = 0.7 if f_conf < MIN_CONFIDENCE_FAMILY else 1.0
 
         a_weight = max(0.0, min(1.0, a_conf)) * q_weight * airline_penalty
+        m_weight = max(0.0, min(1.0, m_conf)) * q_weight * model_penalty
         f_weight = max(0.0, min(1.0, f_conf)) * q_weight * family_penalty
         p_weight = max(0.0, min(1.0, p_conf)) * q_weight
 
         airline_votes[airline] = airline_votes.get(airline, 0.0) + a_weight
+        model_votes[model] = model_votes.get(model, 0.0) + m_weight
         family_votes[family] = family_votes.get(family, 0.0) + f_weight
         phase_votes[phase] = phase_votes.get(phase, 0.0) + p_weight
 
         total_airline_weight += a_weight
+        total_model_weight += m_weight
         total_family_weight += f_weight
         total_phase_weight += p_weight
 
@@ -201,6 +222,10 @@ def _aggregate_predictions(preds: List[Dict], qualities: List[float], frame_indi
 
     frames_used = len(preds)
     airline_conf = min(1.0, best_airline_score / max(frames_used, 1))
+    best_model, best_model_score = ("UNKNOWN", 0.0)
+    if model_votes:
+        best_model, best_model_score = max(model_votes.items(), key=lambda kv: kv[1])
+    model_conf = min(1.0, best_model_score / max(frames_used, 1))
     family_conf = min(1.0, best_family_score / max(frames_used, 1))
     best_phase, best_phase_score = ("unknown", 0.0)
     if phase_votes:
@@ -222,24 +247,29 @@ def _aggregate_predictions(preds: List[Dict], qualities: List[float], frame_indi
 
     # produce sorted vote breakdowns for transparency
     vote_list = [{"airline": a, "weight": round(w, 3)} for a, w in sorted(airline_votes.items(), key=lambda kv: kv[1], reverse=True)]
+    model_vote_list = [{"model": m, "weight": round(w, 3)} for m, w in sorted(model_votes.items(), key=lambda kv: kv[1], reverse=True)]
     family_vote_list = [{"family": f, "weight": round(w, 3)} for f, w in sorted(family_votes.items(), key=lambda kv: kv[1], reverse=True)]
     phase_vote_list = [{"phase": p, "weight": round(w, 3)} for p, w in sorted(phase_votes.items(), key=lambda kv: kv[1], reverse=True)]
 
     return {
         "airline": best_airline,
+        "aircraft_model": best_model,
         "aircraft_family": best_family,
         "confidence": round(airline_conf, 3),
+        "model_confidence": round(model_conf, 3),
         "family_confidence": round(family_conf, 3),
         "phase": best_phase,
         "phase_confidence": round(phase_conf, 3),
         "uncertainty": round(uncertainty, 3),
         "confidence_level": _confidence_level(airline_conf),
+        "model_confidence_level": _confidence_level(model_conf),
         "family_confidence_level": _confidence_level(family_conf),
         "low_confidence": airline_conf < MIN_CONFIDENCE_AIRLINE,
         "frames_used": len(preds),
         "source_frames": frame_indices,
         "cues": winning_cues,
         "votes": vote_list,
+        "model_votes": model_vote_list,
         "family_votes": family_vote_list,
         "phase_votes": phase_vote_list,
         "fallback_used": fallback_used,
@@ -296,12 +326,15 @@ def classify_burst_consensus(
     if not frames:
         return {
             "airline": "UNKNOWN",
+            "aircraft_model": "UNKNOWN",
             "aircraft_family": "UNKNOWN",
             "confidence": 0.0,
+            "model_confidence": 0.0,
             "uncertainty": 1.0,
             "frames_used": 0,
             "cues": [],
             "votes": [],
+            "model_votes": [],
             "family_votes": [],
             "source_frames": [],
             "sharpness_scores": {},

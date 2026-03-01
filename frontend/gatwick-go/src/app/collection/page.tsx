@@ -1,154 +1,307 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { getCollection } from "@/lib/store";
-import { RARITY_COLORS, RARITY_LABELS } from "@/lib/data";
-import type { PlaneCard } from "@/lib/data";
+import { useEffect, useMemo, useState } from "react";
+import {
+  ALL_PLANE_SLOTS,
+  AIRLINE_MODELS,
+  RARITY_LABELS,
+  airlines,
+  canonicalizePlaneType,
+  resolveAirline,
+  type PlaneCard,
+  type PlaneSlot,
+} from "@/lib/data";
+import { getCollection, subscribeToProgressStore } from "@/lib/store";
+
+type RarityFilter = "all" | "common" | "rare" | "shiny";
+type SortMode = "airline" | "alpha" | "collected";
+
+function slotKey(airlineId: string, planeType: string) {
+  return `${airlineId}::${planeType}`;
+}
+
+function getAirlineAccent(airlineId: string): string {
+  return AIRLINE_MODELS[airlineId]?.length ? "border-white/12" : "border-white/8";
+}
+
+function rarityClass(rarity: PlaneCard["rarity"] | null): string {
+  if (rarity === "shiny") return "card-shiny";
+  if (rarity === "rare") return "card-rare";
+  if (rarity === "common") return "card-common";
+  return "card-uncollected";
+}
+
+function slotMatchesCard(slot: PlaneSlot, card: PlaneCard): boolean {
+  const cardAirline = resolveAirline(card.airline);
+  if (!cardAirline || cardAirline.id !== slot.airlineId) {
+    return false;
+  }
+
+  const slotType = slot.planeType;
+  const cardType = canonicalizePlaneType(card.planeType);
+
+  if (slotType === cardType) {
+    return true;
+  }
+
+  if (slotType === "A320-family") {
+    return ["A319", "A320", "A320neo", "A321", "A320-family"].includes(cardType);
+  }
+
+  return slotType === cardType;
+}
 
 export default function CollectionPage() {
   const [collection, setCollection] = useState<PlaneCard[]>([]);
-  const [filter, setFilter] = useState<"all" | "common" | "rare" | "shiny">(
-    "all"
-  );
+  const [filter, setFilter] = useState<RarityFilter>("all");
+  const [sort, setSort] = useState<SortMode>("collected");
 
   useEffect(() => {
-    setCollection(getCollection());
+    const sync = () => {
+      setCollection(getCollection());
+    };
+
+    sync();
+    return subscribeToProgressStore(sync);
   }, []);
 
-  const filtered =
-    filter === "all" ? collection : collection.filter((c) => c.rarity === filter);
+  const slotState = useMemo(() => {
+    const latestCardBySlot = new Map<string, PlaneCard>();
 
-  const stats = {
-    total: collection.length,
-    common: collection.filter((c) => c.rarity === "common").length,
-    rare: collection.filter((c) => c.rarity === "rare").length,
-    shiny: collection.filter((c) => c.rarity === "shiny").length,
-  };
+    for (const card of collection) {
+      const matchingSlot = ALL_PLANE_SLOTS.find((slot) => slotMatchesCard(slot, card));
+      if (!matchingSlot) continue;
+
+      const key = slotKey(matchingSlot.airlineId, matchingSlot.planeType);
+      const current = latestCardBySlot.get(key);
+      if (!current || new Date(card.capturedAt).getTime() > new Date(current.capturedAt).getTime()) {
+        latestCardBySlot.set(key, card);
+      }
+    }
+
+    return ALL_PLANE_SLOTS.map((slot) => {
+      const airline = airlines.find((item) => item.id === slot.airlineId) ?? airlines[0];
+      const collectedCard = latestCardBySlot.get(slotKey(slot.airlineId, slot.planeType)) ?? null;
+
+      return {
+        slot,
+        airline,
+        collected: Boolean(collectedCard),
+        card: collectedCard,
+      };
+    });
+  }, [collection]);
+
+  const filteredSlots = useMemo(() => {
+    const next = slotState.filter((entry) => {
+      if (filter === "all") return true;
+      return entry.card?.rarity === filter;
+    });
+
+    next.sort((left, right) => {
+      if (sort === "collected") {
+        if (left.collected !== right.collected) {
+          return left.collected ? -1 : 1;
+        }
+        const leftTime = left.card ? new Date(left.card.capturedAt).getTime() : 0;
+        const rightTime = right.card ? new Date(right.card.capturedAt).getTime() : 0;
+        return rightTime - leftTime || left.airline.name.localeCompare(right.airline.name);
+      }
+
+      if (sort === "alpha") {
+        return left.slot.planeType.localeCompare(right.slot.planeType) ||
+          left.airline.name.localeCompare(right.airline.name);
+      }
+
+      return left.airline.name.localeCompare(right.airline.name) ||
+        left.slot.planeType.localeCompare(right.slot.planeType);
+    });
+
+    return next;
+  }, [filter, slotState, sort]);
+
+  const stats = useMemo(() => {
+    const collectedSlots = slotState.filter((entry) => entry.collected);
+    const shiny = collectedSlots.filter((entry) => entry.card?.rarity === "shiny").length;
+    const rare = collectedSlots.filter((entry) => entry.card?.rarity === "rare").length;
+    const common = collectedSlots.filter((entry) => entry.card?.rarity === "common").length;
+
+    return {
+      totalSlots: slotState.length,
+      collectedSlots: collectedSlots.length,
+      completion: slotState.length > 0 ? Math.round((collectedSlots.length / slotState.length) * 100) : 0,
+      totalCaptures: collection.length,
+      shiny,
+      rare,
+      common,
+    };
+  }, [collection.length, slotState]);
 
   return (
-    <div className="flex flex-col gap-4 px-4 pt-4">
-      {/* Header */}
-      <header className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-gatwick-dark">Collection</h1>
-        <div className="flex items-center gap-2 text-xs text-gray-500">
-          <span>{stats.total} cards</span>
+    <div className="flex flex-col gap-5 px-4 pt-4 pb-8">
+      <header className="rounded-[28px] bg-gatwick-dark px-5 py-5 text-white shadow-[0_16px_40px_rgba(0,27,77,0.18)]">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <p className="text-[11px] uppercase tracking-[0.32em] text-white/55">
+              Gemini Collection
+            </p>
+            <h1 className="mt-2 text-3xl font-black tracking-tight">
+              /collection
+            </h1>
+            <p className="mt-2 max-w-[20rem] text-sm text-white/70">
+              Every session capture from Gemini lands here. Collected aircraft stay lit, the rest remain hidden.
+            </p>
+          </div>
+          <div className="rounded-2xl border border-white/10 bg-white/8 px-4 py-3 text-right backdrop-blur">
+            <p className="text-[11px] uppercase tracking-[0.22em] text-white/55">
+              Completion
+            </p>
+            <p className="mt-1 text-3xl font-black">{stats.completion}%</p>
+          </div>
+        </div>
+
+        <div className="mt-5 h-3 overflow-hidden rounded-full bg-white/10">
+          <div
+            className="progress-fill h-full rounded-full bg-gradient-to-r from-gatwick-gold via-white to-gatwick-red"
+            style={{ width: `${stats.completion}%` }}
+          />
+        </div>
+
+        <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <div className="rounded-2xl border border-white/10 bg-white/6 px-4 py-3">
+            <p className="text-[11px] uppercase tracking-[0.16em] text-white/55">Collected</p>
+            <p className="mt-1 text-2xl font-bold">{stats.collectedSlots}</p>
+            <p className="text-xs text-white/60">of {stats.totalSlots} fleet slots</p>
+          </div>
+          <div className="rounded-2xl border border-white/10 bg-white/6 px-4 py-3">
+            <p className="text-[11px] uppercase tracking-[0.16em] text-white/55">Captures</p>
+            <p className="mt-1 text-2xl font-bold">{stats.totalCaptures}</p>
+            <p className="text-xs text-white/60">session cards saved</p>
+          </div>
+          <div className="rounded-2xl border border-white/10 bg-white/6 px-4 py-3">
+            <p className="text-[11px] uppercase tracking-[0.16em] text-white/55">Rare</p>
+            <p className="mt-1 text-2xl font-bold">{stats.rare}</p>
+            <p className="text-xs text-white/60">mid-tier finds</p>
+          </div>
+          <div className="rounded-2xl border border-white/10 bg-white/6 px-4 py-3">
+            <p className="text-[11px] uppercase tracking-[0.16em] text-white/55">Shiny</p>
+            <p className="mt-1 text-2xl font-bold">{stats.shiny}</p>
+            <p className="text-xs text-white/60">top rarity pulls</p>
+          </div>
         </div>
       </header>
 
-      {/* Stats Row */}
-      <div className="flex gap-2">
-        <div className="flex-1 bg-gray-100 rounded-xl p-3 text-center">
-          <p className="text-2xl font-bold text-gray-600">{stats.common}</p>
-          <p className="text-[10px] text-gray-400 font-medium">Common</p>
-        </div>
-        <div className="flex-1 bg-blue-50 rounded-xl p-3 text-center">
-          <p className="text-2xl font-bold text-blue-500">{stats.rare}</p>
-          <p className="text-[10px] text-blue-400 font-medium">Rare</p>
-        </div>
-        <div className="flex-1 bg-amber-50 rounded-xl p-3 text-center">
-          <p className="text-2xl font-bold text-amber-500">{stats.shiny}</p>
-          <p className="text-[10px] text-amber-400 font-medium">Shiny</p>
-        </div>
-      </div>
-
-      {/* Filter tabs */}
-      <div className="flex gap-2">
-        {(["all", "common", "rare", "shiny"] as const).map((f) => (
+      <section className="grid grid-cols-2 gap-3">
+        {(["all", "common", "rare", "shiny"] as const).map((value) => (
           <button
-            key={f}
-            onClick={() => setFilter(f)}
-            className={`px-4 py-2 rounded-full text-xs font-medium transition-colors ${
-              filter === f
-                ? "bg-gatwick-blue text-white"
-                : "bg-white text-gray-500 border border-gray-200"
+            key={value}
+            onClick={() => setFilter(value)}
+            className={`rounded-2xl px-4 py-3 text-left transition ${
+              filter === value
+                ? "bg-gatwick-blue text-white shadow-[0_10px_24px_rgba(0,61,165,0.22)]"
+                : "bg-white text-gatwick-dark ring-1 ring-black/5"
             }`}
           >
-            {f === "all" ? "All" : RARITY_LABELS[f]}
+            <p className="text-xs uppercase tracking-[0.16em] opacity-70">Filter</p>
+            <p className="mt-1 text-sm font-bold">
+              {value === "all" ? "All Slots" : RARITY_LABELS[value]}
+            </p>
           </button>
         ))}
-      </div>
+      </section>
 
-      {/* Cards Grid */}
-      {filtered.length === 0 ? (
-        <div className="flex flex-col items-center justify-center py-16 text-center">
-          <span className="text-5xl mb-4">✈️</span>
-          <p className="text-gray-500 font-medium">
-            {filter === "all"
-              ? "No planes captured yet!"
-              : `No ${filter} planes yet!`}
-          </p>
-          <p className="text-gray-400 text-sm mt-1">
-            Head to the camera to start spotting
-          </p>
+      <section className="rounded-[24px] bg-white p-4 shadow-sm ring-1 ring-black/5">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <p className="text-[11px] uppercase tracking-[0.22em] text-gray-400">Sort</p>
+            <h2 className="text-lg font-bold text-gatwick-dark">Fleet Grid</h2>
+          </div>
+          <div className="flex gap-2">
+            {([
+              { id: "collected", label: "Newest" },
+              { id: "airline", label: "Airline" },
+              { id: "alpha", label: "Model" },
+            ] as const).map((option) => (
+              <button
+                key={option.id}
+                onClick={() => setSort(option.id)}
+                className={`rounded-full px-3 py-2 text-xs font-semibold transition ${
+                  sort === option.id
+                    ? "bg-gatwick-dark text-white"
+                    : "bg-gatwick-light text-gatwick-dark"
+                }`}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
         </div>
-      ) : (
-        <div className="grid grid-cols-2 gap-3 pb-4">
-          {filtered.map((card) => (
-            <div
-              key={card.id}
-              className={`rounded-2xl p-3 bg-card-bg shadow-sm border border-gray-100 overflow-hidden relative ${
-                card.rarity === "shiny"
-                  ? "shiny-card"
-                  : card.rarity === "rare"
-                  ? "rare-card"
-                  : ""
-              }`}
-            >
-              {/* Rarity badge */}
-              <span
-                className="absolute top-2 right-2 px-2 py-0.5 rounded-full text-[10px] font-bold text-white"
-                style={{ backgroundColor: RARITY_COLORS[card.rarity] }}
-              >
-                {RARITY_LABELS[card.rarity]}
-              </span>
 
-              {/* Airline logo */}
-              <div
-                className={`w-12 h-12 rounded-xl flex items-center justify-center text-2xl mb-2 ${
-                  card.rarity === "shiny" ? "bg-white/30" : "bg-gatwick-light"
-                }`}
-              >
-                {card.airline.logo}
-              </div>
+        <div className="mt-4 grid grid-cols-2 gap-3">
+          {filteredSlots.map(({ slot, airline, collected, card }) => {
+            const displayFlight = card?.flightNumber || "LOCKED";
+            const displayDate = card
+              ? new Date(card.capturedAt).toLocaleDateString("en-GB", {
+                  day: "numeric",
+                  month: "short",
+                })
+              : "Uncollected";
 
-              {/* Info */}
-              <p
-                className={`font-bold text-sm leading-tight ${
-                  card.rarity === "shiny" ? "text-white" : "text-gatwick-dark"
-                }`}
+            return (
+              <article
+                key={slotKey(slot.airlineId, slot.planeType)}
+                className={`relative min-h-[188px] overflow-hidden rounded-[26px] p-4 text-white ${rarityClass(card?.rarity ?? null)}`}
               >
-                {card.airline.name}
-              </p>
-              <p
-                className={`text-xs mt-0.5 ${
-                  card.rarity === "shiny" ? "text-white/80" : "text-gray-500"
-                }`}
-              >
-                {card.planeType}
-              </p>
-              <div className="flex items-center justify-between mt-2">
-                <span
-                  className={`text-[10px] font-mono ${
-                    card.rarity === "shiny" ? "text-white/60" : "text-gray-400"
-                  }`}
-                >
-                  {card.flightNumber}
-                </span>
-                <span
-                  className={`text-[10px] ${
-                    card.rarity === "shiny" ? "text-white/60" : "text-gray-400"
-                  }`}
-                >
-                  {new Date(card.capturedAt).toLocaleDateString("en-GB", {
-                    day: "numeric",
-                    month: "short",
-                  })}
-                </span>
-              </div>
-            </div>
-          ))}
+                <div className="absolute inset-x-0 top-0 h-24 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.22),transparent_68%)]" />
+                <div className="relative flex h-full flex-col">
+                  <div className="flex items-start justify-between gap-3">
+                    <div
+                      className={`flex h-12 w-12 items-center justify-center rounded-2xl border bg-white/10 text-sm font-black tracking-[0.14em] text-white ${getAirlineAccent(airline.id)}`}
+                      style={{ boxShadow: `0 0 0 1px ${airline.color}40 inset` }}
+                    >
+                      {airline.logo}
+                    </div>
+                    <span className="rounded-full bg-black/25 px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.16em] text-white/80">
+                      {collected ? (card ? RARITY_LABELS[card.rarity] : "Collected") : "Hidden"}
+                    </span>
+                  </div>
+
+                  <div className="mt-4">
+                    <p className="text-sm font-black leading-tight">
+                      {airline.name}
+                    </p>
+                    <p className="mt-1 text-xs text-white/74">{slot.planeType}</p>
+                  </div>
+
+                  <div className="mt-auto pt-5">
+                    {collected && card ? (
+                      <>
+                        <div className="flex items-center justify-between text-[11px] text-white/72">
+                          <span>{displayFlight}</span>
+                          <span>{displayDate}</span>
+                        </div>
+                        <p className="mt-2 text-[11px] uppercase tracking-[0.18em] text-white/55">
+                          Session capture saved
+                        </p>
+                      </>
+                    ) : (
+                      <>
+                        <div className="flex items-center justify-between text-[11px] text-white/55">
+                          <span>{displayFlight}</span>
+                          <span>{displayDate}</span>
+                        </div>
+                        <p className="mt-2 text-[11px] uppercase tracking-[0.18em] text-white/45">
+                          Capture this aircraft to reveal it
+                        </p>
+                      </>
+                    )}
+                  </div>
+                </div>
+              </article>
+            );
+          })}
         </div>
-      )}
+      </section>
     </div>
   );
 }

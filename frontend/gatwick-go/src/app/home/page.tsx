@@ -23,10 +23,14 @@ export default function Home() {
   const { email, signOut } = useAuth();
 
   useEffect(() => {
-    setPoints(getPoints());
-    setPointsToNext(getPointsToNextMilestone());
-    setProgress(getMilestoneProgress());
-    setCollectionCount(getCollection().length);
+    const syncFromCache = () => {
+      setPoints(getPoints());
+      setPointsToNext(getPointsToNextMilestone());
+      setProgress(getMilestoneProgress());
+      setCollectionCount(getCollection().length);
+    };
+
+    syncFromCache();
   }, []);
 
   return (

@@ -35,7 +35,12 @@ app = Flask(__name__, template_folder=os.path.join(os.path.dirname(__file__), "t
 
 # Path to the exported model UI (Next.js static build)
 MODEL_STATIC_DIR = Path(app.static_folder) / "model"
-GEMINI_CAPTURE_POINTS = 5
+GEMINI_CAPTURE_POINTS = 50
+MIN_QUALIFYING_LIVE_MATCH_SCORE = 0.5
+USER_PROGRESS_SQL_HINT = (
+    "Apply backend/sql/20260301_user_progress_policies.sql to enable "
+    "authenticated read/write access for public.user_stats and public.profiles."
+)
 
 
 def _utc_now_iso() -> str:
@@ -92,37 +97,306 @@ def _best_flight_from_match(match: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     return flight if isinstance(flight, dict) else {}
 
 
-def _resolve_family_code(
+def _error_text(error: Any) -> str:
+    if isinstance(error, str):
+        return error
+    return str(error or "")
+
+
+def _is_missing_table_error(error: Any, table_name: str) -> bool:
+    text = _error_text(error)
+    return "PGRST205" in text and table_name in text
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return default
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
+def _promo_code_from_claim_id(claim_id: Any) -> Optional[str]:
+    if not isinstance(claim_id, str) or not claim_id:
+        return None
+    compact = claim_id.replace("-", "").upper()
+    return compact[:10] if compact else None
+
+
+def _normalized_text(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    return value.strip().casefold()
+
+
+def _best_match_score(match: Optional[Dict[str, Any]]) -> float:
+    best = (match or {}).get("best") or {}
+    if not isinstance(best, dict):
+        return 0.0
+    return max(0.0, min(1.0, _safe_float(best.get("score"), 0.0)))
+
+
+def _is_qualifying_live_match(match: Optional[Dict[str, Any]], effective_mode: str) -> bool:
+    return _best_match_score(match) > MIN_QUALIFYING_LIVE_MATCH_SCORE
+
+
+def _resolve_family_metadata(
     supabase_client,
     family_code: Optional[str],
-) -> tuple[Optional[str], Optional[str]]:
+) -> tuple[Dict[str, Any], Optional[str]]:
     """
-    Validate the classifier family value against aircraft_families.code when possible.
-    Returns (resolved_code, warning_message).
+    Resolve family lookup metadata when possible without making inserts depend on it.
     """
     if not isinstance(family_code, str):
-        return None, None
+        return {"code": None, "display_name": None, "rarity": None}, None
 
     normalized = family_code.strip()
     if not normalized or normalized == "UNKNOWN":
-        return None, None
+        return {"code": None, "display_name": None, "rarity": None}, None
 
     try:
         family_resp = (
             supabase_client
             .table("aircraft_families")
-            .select("code")
+            .select("code, display_name, rarity")
             .eq("code", normalized)
             .limit(1)
             .execute()
         )
         if getattr(family_resp, "error", None):
-            return normalized, f"Failed to validate aircraft family against aircraft_families: {family_resp.error}"
-        if _first_row(family_resp):
-            return normalized, None
-        return normalized, f"Aircraft family `{normalized}` was not found in aircraft_families.code; stored it anyway in user_stats.collected_families."
+            return (
+                {"code": normalized, "display_name": normalized, "rarity": None},
+                f"Failed to read aircraft_families for `{normalized}`: {family_resp.error}",
+            )
+        row = _first_row(family_resp)
+        if row:
+            return {
+                "code": row.get("code") or normalized,
+                "display_name": row.get("display_name") or normalized,
+                "rarity": row.get("rarity"),
+            }, None
+        return (
+            {"code": normalized, "display_name": normalized, "rarity": None},
+            f"Aircraft family `{normalized}` was not found in aircraft_families.code; storing raw family code.",
+        )
     except Exception as exc:
-        return normalized, f"Failed to validate aircraft family against aircraft_families: {exc}"
+        return (
+            {"code": normalized, "display_name": normalized, "rarity": None},
+            f"Failed to read aircraft_families for `{normalized}`: {exc}",
+        )
+
+
+def _build_collection_dedupe_key(
+    user_id: str,
+    best_flight: Dict[str, Any],
+    detected_model: Optional[str],
+    family_code: Optional[str],
+) -> str:
+    identity = (
+        best_flight.get("icao24")
+        or best_flight.get("flight_number")
+        or best_flight.get("callsign")
+        or "unknown-flight"
+    )
+    model_key = detected_model or "unknown-model"
+    family_key = family_code or "unknown-family"
+    return f"{user_id}|{identity}|{model_key}|{family_key}"
+
+
+def _resolve_reward_row(
+    supabase_client,
+    reward_id: Optional[int] = None,
+    reward_code: Optional[str] = None,
+    reward_title: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    active_rewards_resp = (
+        supabase_client
+        .table("rewards")
+        .select("id, code, title, description, cost_points, is_active, created_at")
+        .execute()
+    )
+    rewards_error = getattr(active_rewards_resp, "error", None)
+    if rewards_error:
+        raise RuntimeError(rewards_error)
+
+    raw_rewards = getattr(active_rewards_resp, "data", None) or []
+    rewards: list[Dict[str, Any]] = []
+    if isinstance(raw_rewards, list):
+        for row in raw_rewards:
+            if not isinstance(row, dict):
+                continue
+            if row.get("is_active") is False:
+                continue
+            rewards.append(row)
+
+    if reward_id and reward_id > 0:
+        for row in rewards:
+            if _safe_int(row.get("id"), 0) == reward_id:
+                return row
+
+    normalized_code = _normalized_text(reward_code)
+    if normalized_code:
+        for row in rewards:
+            if _normalized_text(row.get("code")) == normalized_code:
+                return row
+
+    normalized_title = _normalized_text(reward_title)
+    if normalized_title:
+        for row in rewards:
+            if _normalized_text(row.get("title")) == normalized_title:
+                return row
+
+    return None
+
+
+def _read_user_stats_row(
+    supabase_client,
+    user_id: str,
+) -> Optional[Dict[str, Any]]:
+    stats_resp = (
+        supabase_client
+        .table("user_stats")
+        .select("user_id, points_total, collected_families, updated_at")
+        .eq("user_id", user_id)
+        .limit(1)
+        .execute()
+    )
+    stats_error = getattr(stats_resp, "error", None)
+    if stats_error:
+        raise RuntimeError(
+            f"Failed to read public.user_stats: {stats_error}. {USER_PROGRESS_SQL_HINT}"
+    )
+    return _first_row(stats_resp)
+
+
+def _award_capture_progress_via_tables(
+    supabase_client,
+    user_id: str,
+    points_awarded: int,
+    family_code: Optional[str],
+) -> Dict[str, Any]:
+    existing_row = _read_user_stats_row(supabase_client, user_id)
+    current_points_total = int(existing_row.get("points_total") or 0) if existing_row else 0
+    expected_points_total = current_points_total + points_awarded
+    expected_families = _merge_unique_strings(
+        existing_row.get("collected_families") if existing_row else [],
+        family_code,
+    )
+
+    stats_payload = {
+        "points_total": expected_points_total,
+        "collected_families": expected_families,
+        "updated_at": _utc_now_iso(),
+    }
+    if existing_row:
+        update_resp = (
+            supabase_client
+            .table("user_stats")
+            .update(stats_payload)
+            .eq("user_id", user_id)
+            .execute()
+        )
+        if getattr(update_resp, "error", None):
+            raise RuntimeError(f"{update_resp.error}. {USER_PROGRESS_SQL_HINT}")
+    else:
+        insert_resp = (
+            supabase_client
+            .table("user_stats")
+            .insert({
+                "user_id": user_id,
+                **stats_payload,
+            })
+            .execute()
+        )
+        if getattr(insert_resp, "error", None):
+            raise RuntimeError(f"{insert_resp.error}. {USER_PROGRESS_SQL_HINT}")
+
+    persisted_stats_row = _read_user_stats_row(supabase_client, user_id)
+    if not persisted_stats_row:
+        raise RuntimeError(
+            "public.user_stats write did not persist or is hidden by row-level security. "
+            + USER_PROGRESS_SQL_HINT
+        )
+
+    next_points_total = _safe_int(
+        persisted_stats_row.get("points_total"),
+        expected_points_total,
+    )
+    next_families = (
+        persisted_stats_row.get("collected_families")
+        if isinstance(persisted_stats_row.get("collected_families"), list)
+        else expected_families
+    )
+    if next_points_total != expected_points_total:
+        raise RuntimeError(
+            "public.user_stats write completed without persisting the expected points_total. "
+            + USER_PROGRESS_SQL_HINT
+        )
+
+    return {
+        "points_total": next_points_total,
+        "collected_families": next_families,
+    }
+
+
+def _award_capture_progress(
+    supabase_client,
+    user_id: str,
+    points_awarded: int,
+    family_code: Optional[str],
+) -> Dict[str, Any]:
+    rpc_resp = (
+        supabase_client
+        .rpc(
+            "award_capture_progress",
+            {
+                "p_points": points_awarded,
+                "p_family_code": family_code,
+            },
+        )
+        .execute()
+    )
+    rpc_error = getattr(rpc_resp, "error", None)
+    if rpc_error:
+        rpc_error_text = _error_text(rpc_error)
+        if "public.award_capture_progress" in rpc_error_text or "PGRST202" in rpc_error_text:
+            return _award_capture_progress_via_tables(
+                supabase_client=supabase_client,
+                user_id=user_id,
+                points_awarded=points_awarded,
+                family_code=family_code,
+            )
+        raise RuntimeError(
+            f"Failed to update public.user_stats via award_capture_progress: {rpc_error}. "
+            + USER_PROGRESS_SQL_HINT
+        )
+
+    progress_row = _first_row(rpc_resp)
+    if not progress_row:
+        raise RuntimeError(
+            "public.award_capture_progress returned no data. "
+            + USER_PROGRESS_SQL_HINT
+        )
+
+    returned_user_id = progress_row.get("user_id")
+    if isinstance(returned_user_id, str) and returned_user_id and returned_user_id != user_id:
+        raise RuntimeError("public.award_capture_progress returned an unexpected user_id.")
+
+    points_total = _safe_int(progress_row.get("points_total"), points_awarded)
+    collected_families = progress_row.get("collected_families")
+    if not isinstance(collected_families, list):
+        collected_families = _merge_unique_strings([], family_code)
+
+    return {
+        "points_total": points_total,
+        "collected_families": collected_families,
+    }
 
 
 def _persist_capture_for_user(
@@ -140,91 +414,143 @@ def _persist_capture_for_user(
     fallback_reason: Optional[str],
 ) -> Dict[str, Any]:
     """
-    Persist the classify result to the schema that actually exists:
-    - user_stats.points_total
-    - user_stats.collected_families
-
-    The attached schema has no per-user airline capture table, so airline is returned
-    in the API response but not written to Supabase.
+    Award flat points for every classify call and persist Gemini capture data
+    for the user, with live-match metadata when available.
     """
     best_flight = _best_flight_from_match(match)
+    match_score = _best_match_score(match)
+    qualifying_live_match = _is_qualifying_live_match(match, effective_mode)
 
     captured_airline = result.get("airline")
     if not isinstance(captured_airline, str) or not captured_airline or captured_airline == "UNKNOWN":
         captured_airline = str(best_flight.get("airline") or "UNKNOWN")
 
-    captured_model = result.get("aircraft_family")
+    captured_model = result.get("aircraft_model")
+    if not isinstance(captured_model, str) or not captured_model or captured_model == "UNKNOWN":
+        captured_model = result.get("aircraft_family")
     if not isinstance(captured_model, str) or not captured_model:
         captured_model = str(best_flight.get("aircraft_family") or "UNKNOWN")
 
-    resolved_family_code, family_warning = _resolve_family_code(
+    family_metadata, family_warning = _resolve_family_metadata(
         supabase_client=supabase_client,
-        family_code=captured_model,
+        family_code=result.get("aircraft_family") or best_flight.get("aircraft_family"),
     )
+    resolved_family_code = family_metadata.get("code")
 
-    current_stats_resp = (
-        supabase_client
-        .table("user_stats")
-        .select("user_id, points_total, collected_families")
-        .eq("user_id", user_id)
-        .limit(1)
-        .execute()
-    )
-    if getattr(current_stats_resp, "error", None):
-        raise RuntimeError(current_stats_resp.error)
-
-    existing_row = _first_row(current_stats_resp)
-    next_points_total = (
-        int(existing_row.get("points_total") or 0) + GEMINI_CAPTURE_POINTS
-        if existing_row
-        else GEMINI_CAPTURE_POINTS
-    )
-    next_families = _merge_unique_strings(
-        existing_row.get("collected_families") if existing_row else [],
-        resolved_family_code,
-    )
+    points_awarded = GEMINI_CAPTURE_POINTS
+    next_points_total = 0
+    next_families: list[str] = []
     storage_warnings: list[str] = []
     if family_warning:
         storage_warnings.append(family_warning)
-    storage_warnings.append(
-        "The current Supabase schema has no table for per-user captured airlines. Only user_stats.points_total and user_stats.collected_families are persisted."
+    collection_saved = False
+    already_in_collection = False
+    collection_entry_id = None
+    collection_item_key = None
+
+    progress_info = _award_capture_progress(
+        supabase_client=supabase_client,
+        user_id=user_id,
+        points_awarded=points_awarded,
+        family_code=resolved_family_code,
+    )
+    next_points_total = _safe_int(progress_info.get("points_total"), 0)
+    next_families = (
+        progress_info.get("collected_families")
+        if isinstance(progress_info.get("collected_families"), list)
+        else []
     )
 
-    if existing_row:
-        update_resp = (
-            supabase_client
-            .table("user_stats")
-            .update({
-                "points_total": next_points_total,
-                "collected_families": next_families,
-                "updated_at": _utc_now_iso(),
-            })
-            .eq("user_id", user_id)
-            .execute()
-        )
-        if getattr(update_resp, "error", None):
-            raise RuntimeError(update_resp.error)
+    collection_item_key = _build_collection_dedupe_key(
+        user_id=user_id,
+        best_flight=best_flight,
+        detected_model=captured_model,
+        family_code=resolved_family_code,
+    )
+    existing_collection_resp = (
+        supabase_client
+        .table("user_aircraft_collection")
+        .select("id")
+        .eq("user_id", user_id)
+        .eq("dedupe_key", collection_item_key)
+        .limit(1)
+        .execute()
+    )
+    collection_error = getattr(existing_collection_resp, "error", None)
+    if collection_error:
+        if _is_missing_table_error(collection_error, "public.user_aircraft_collection"):
+            storage_warnings.append(
+                "Supabase table public.user_aircraft_collection is missing. Apply backend/sql/20260301_live_match_collection.sql to persist Gemini capture items."
+            )
+        else:
+            raise RuntimeError(collection_error)
     else:
-        insert_resp = (
-            supabase_client
-            .table("user_stats")
-            .insert({
+        existing_collection_row = _first_row(existing_collection_resp)
+        if existing_collection_row:
+            already_in_collection = True
+            collection_entry_id = existing_collection_row.get("id")
+        else:
+            collection_payload: Dict[str, Any] = {
                 "user_id": user_id,
-                "points_total": next_points_total,
-                "collected_families": next_families,
-                "updated_at": _utc_now_iso(),
-            })
-            .execute()
-        )
-        if getattr(insert_resp, "error", None):
-            raise RuntimeError(insert_resp.error)
+                "dedupe_key": collection_item_key,
+                "flight_number": best_flight.get("flight_number") or best_flight.get("callsign"),
+                "airline": captured_airline,
+                "detected_model": captured_model,
+                "aircraft_family_code": resolved_family_code,
+                "aircraft_family_display_name": family_metadata.get("display_name") or resolved_family_code,
+                "family_rarity": family_metadata.get("rarity"),
+                "match_score": match_score,
+                "source_mode": effective_mode,
+                "captured_at": _utc_now_iso(),
+                "metadata": {
+                    "confidence": result.get("confidence"),
+                    "model_confidence": result.get("model_confidence"),
+                    "family_confidence": result.get("family_confidence"),
+                    "phase": result.get("phase"),
+                    "phase_confidence": result.get("phase_confidence"),
+                    "icao24": best_flight.get("icao24"),
+                    "qualifying_live_match": qualifying_live_match,
+                    "observer": {"lat": observer[0], "lon": observer[1], "radius_km": radius_km},
+                    "frames_processed": frames_processed,
+                    "requested_mode": requested_mode,
+                    "effective_mode": effective_mode,
+                    "fallback_reason": fallback_reason,
+                },
+            }
+            collection_payload = {k: v for k, v in collection_payload.items() if v is not None}
+            collection_insert_resp = (
+                supabase_client
+                .table("user_aircraft_collection")
+                .insert(collection_payload)
+                .execute()
+            )
+            insert_error = getattr(collection_insert_resp, "error", None)
+            if insert_error:
+                if _is_missing_table_error(insert_error, "public.user_aircraft_collection"):
+                    storage_warnings.append(
+                        "Supabase table public.user_aircraft_collection is missing. Apply backend/sql/20260301_live_match_collection.sql to persist Gemini capture items."
+                    )
+                else:
+                    raise RuntimeError(insert_error)
+            else:
+                inserted_row = _first_row(collection_insert_resp)
+                collection_entry_id = inserted_row.get("id") if inserted_row else None
+                collection_saved = True
 
     return {
+        "qualifying_live_match": qualifying_live_match,
+        "match_score": match_score,
         "captured_airline": captured_airline,
-        "captured_model": resolved_family_code or captured_model,
-        "points_awarded": GEMINI_CAPTURE_POINTS,
+        "captured_model": captured_model,
+        "captured_family_code": resolved_family_code,
+        "captured_family_display_name": family_metadata.get("display_name"),
+        "points_awarded": points_awarded,
         "points_total": next_points_total,
         "collected_families": next_families,
+        "collection_saved": collection_saved,
+        "already_in_collection": already_in_collection,
+        "collection_entry_id": collection_entry_id,
+        "collection_item_key": collection_item_key,
         "storage_warnings": storage_warnings,
     }
 
@@ -511,14 +837,43 @@ def classify_endpoint():
                 response_payload["captured_airline"] = persist_info["captured_airline"]
             if persist_info.get("captured_model"):
                 response_payload["captured_model"] = persist_info["captured_model"]
+            if persist_info.get("captured_family_code"):
+                response_payload["captured_family_code"] = persist_info["captured_family_code"]
+            if persist_info.get("captured_family_display_name"):
+                response_payload["captured_family_display_name"] = persist_info["captured_family_display_name"]
+            response_payload["qualifying_live_match"] = bool(persist_info.get("qualifying_live_match"))
+            response_payload["match_score"] = persist_info.get("match_score")
             if persist_info.get("points_awarded") is not None:
                 response_payload["points_awarded"] = persist_info["points_awarded"]
             if persist_info.get("points_total") is not None:
                 response_payload["points_total"] = persist_info["points_total"]
+            response_payload["collection_saved"] = bool(persist_info.get("collection_saved"))
+            response_payload["already_in_collection"] = bool(persist_info.get("already_in_collection"))
+            if persist_info.get("collection_entry_id"):
+                response_payload["collection_entry_id"] = persist_info["collection_entry_id"]
+            if persist_info.get("collection_item_key"):
+                response_payload["collection_item_key"] = persist_info["collection_item_key"]
             if persist_info.get("storage_warnings"):
                 response_payload["storage_warnings"] = persist_info["storage_warnings"]
         except Exception as exc:
-            return jsonify({"success": False, "error": f"Failed to persist capture: {exc}"}), 500
+            storage_warnings = response_payload.get("storage_warnings")
+            if not isinstance(storage_warnings, list):
+                storage_warnings = []
+            storage_warnings.append(
+                f"Capture was classified successfully but database persistence was skipped: {exc}"
+            )
+            response_payload["storage_warnings"] = storage_warnings
+            response_payload["points_awarded"] = GEMINI_CAPTURE_POINTS
+            response_payload["captured_airline"] = (
+                result.get("airline")
+                if isinstance(result.get("airline"), str)
+                else None
+            )
+            fallback_model = result.get("aircraft_model") or result.get("aircraft_family")
+            if isinstance(fallback_model, str):
+                response_payload["captured_model"] = fallback_model
+            response_payload["collection_saved"] = False
+            response_payload["already_in_collection"] = False
 
         return jsonify(response_payload)
 
@@ -582,6 +937,7 @@ def user_progress_endpoint():
             "updated_at": None,
         }
         collected_codes = stats_row.get("collected_families") if isinstance(stats_row.get("collected_families"), list) else []
+        storage_warnings: list[str] = []
 
         families_resp = (
             supabase_client
@@ -589,9 +945,6 @@ def user_progress_endpoint():
             .select("code, display_name, rarity, created_at")
             .execute()
         )
-        storage_warnings = [
-            "The current schema does not contain a per-user airline capture history table. Progress is persisted in user_stats only."
-        ]
 
         families = getattr(families_resp, "data", None) or []
         if getattr(families_resp, "error", None):
@@ -618,14 +971,245 @@ def user_progress_endpoint():
                 )
             )
 
+        collection_entries: list[Dict[str, Any]] = []
+        collection_resp = (
+            supabase_client
+            .table("user_aircraft_collection")
+            .select("id, dedupe_key, flight_number, airline, detected_model, aircraft_family_code, aircraft_family_display_name, family_rarity, match_score, source_mode, captured_at, metadata")
+            .eq("user_id", user_id)
+            .limit(200)
+            .execute()
+        )
+        collection_error = getattr(collection_resp, "error", None)
+        if collection_error:
+            if _is_missing_table_error(collection_error, "public.user_aircraft_collection"):
+                storage_warnings.append(
+                    "Supabase table public.user_aircraft_collection is missing. Apply backend/sql/20260301_live_match_collection.sql to load saved Gemini capture items."
+                )
+            else:
+                raise RuntimeError(collection_error)
+        else:
+            raw_entries = getattr(collection_resp, "data", None) or []
+            if isinstance(raw_entries, list):
+                for row in raw_entries:
+                    if not isinstance(row, dict):
+                        continue
+                    family_code = row.get("aircraft_family_code")
+                    family_meta = family_by_code.get(family_code) if isinstance(family_code, str) else None
+                    collection_entries.append({
+                        **row,
+                        "aircraft_family_display_name": row.get("aircraft_family_display_name")
+                        or (family_meta or {}).get("display_name")
+                        or family_code,
+                        "family_rarity": row.get("family_rarity") or (family_meta or {}).get("rarity"),
+                    })
+                collection_entries.sort(key=lambda row: str(row.get("captured_at") or ""), reverse=True)
+
         return jsonify({
             "success": True,
             "stats": stats_row,
             "collected_family_details": collected_family_details,
+            "collection_entries": collection_entries,
             "storage_warnings": storage_warnings,
         })
     except Exception as exc:
         return jsonify({"success": False, "error": f"Failed to load user progress: {exc}"}), 500
+
+
+@app.route("/api/shop", methods=["GET"])
+def shop_state_endpoint():
+    """Return DB-backed rewards shop state for the signed-in user."""
+    token = _extract_bearer_token(request.headers.get("Authorization"))
+    if not token:
+        return jsonify({"success": False, "error": "Authorization bearer token required"}), 401
+
+    try:
+        supabase_client = supabase_as_user(token)
+    except Exception as exc:
+        return jsonify({"success": False, "error": f"Supabase configuration error: {exc}"}), 500
+
+    user_id = _jwt_subject(token)
+    if not user_id:
+        return jsonify({"success": False, "error": "Invalid Supabase token"}), 401
+
+    try:
+        stats_resp = (
+            supabase_client
+            .table("user_stats")
+            .select("user_id, points_total, collected_families, updated_at")
+            .eq("user_id", user_id)
+            .limit(1)
+            .execute()
+        )
+        if getattr(stats_resp, "error", None):
+            raise RuntimeError(stats_resp.error)
+
+        stats_row = _first_row(stats_resp) or {
+            "user_id": user_id,
+            "points_total": 0,
+            "collected_families": [],
+            "updated_at": None,
+        }
+
+        rewards: list[Dict[str, Any]] = []
+        reward_by_id: Dict[int, Dict[str, Any]] = {}
+        storage_warnings: list[str] = []
+        rewards_resp = (
+            supabase_client
+            .table("rewards")
+            .select("id, code, title, description, cost_points, is_active, created_at")
+            .execute()
+        )
+        rewards_error = getattr(rewards_resp, "error", None)
+        if rewards_error:
+            storage_warnings.append(f"Could not read rewards lookup table: {rewards_error}")
+        else:
+            raw_rewards = getattr(rewards_resp, "data", None) or []
+            if isinstance(raw_rewards, list):
+                for row in raw_rewards:
+                    if not isinstance(row, dict):
+                        continue
+                    if row.get("is_active") is False:
+                        continue
+                    reward_id = _safe_int(row.get("id"), 0)
+                    reward_row = {
+                        "id": reward_id,
+                        "code": row.get("code"),
+                        "title": row.get("title") or row.get("code") or f"Reward {reward_id}",
+                        "description": row.get("description") or "",
+                        "cost_points": _safe_int(row.get("cost_points"), 0),
+                        "is_active": bool(row.get("is_active", True)),
+                        "created_at": row.get("created_at"),
+                    }
+                    rewards.append(reward_row)
+                    reward_by_id[reward_id] = reward_row
+            rewards.sort(key=lambda row: (row["cost_points"], row["id"]))
+
+        claims: list[Dict[str, Any]] = []
+        claims_resp = (
+            supabase_client
+            .table("reward_claims")
+            .select("id, reward_id, claimed_at, status")
+            .eq("user_id", user_id)
+            .limit(200)
+            .execute()
+        )
+        claims_error = getattr(claims_resp, "error", None)
+        if claims_error:
+            if _is_missing_table_error(claims_error, "public.reward_claims"):
+                storage_warnings.append(
+                    "Supabase table public.reward_claims is missing or unavailable for this user."
+                )
+            else:
+                raise RuntimeError(claims_error)
+        else:
+            raw_claims = getattr(claims_resp, "data", None) or []
+            if isinstance(raw_claims, list):
+                for row in raw_claims:
+                    if not isinstance(row, dict):
+                        continue
+                    reward_id = _safe_int(row.get("reward_id"), 0)
+                    claims.append({
+                        "id": row.get("id"),
+                        "reward_id": reward_id,
+                        "claimed_at": row.get("claimed_at"),
+                        "status": row.get("status") or "claimed",
+                        "promo_code": _promo_code_from_claim_id(row.get("id")),
+                        "reward": reward_by_id.get(reward_id),
+                    })
+                claims.sort(key=lambda row: str(row.get("claimed_at") or ""), reverse=True)
+
+        return jsonify({
+            "success": True,
+            "points_total": _safe_int(stats_row.get("points_total"), 0),
+            "stats": stats_row,
+            "rewards": rewards,
+            "claims": claims,
+            "storage_warnings": storage_warnings,
+        })
+    except Exception as exc:
+        return jsonify({"success": False, "error": f"Failed to load shop state: {exc}"}), 500
+
+
+@app.route("/api/shop/redeem", methods=["POST"])
+def shop_redeem_endpoint():
+    """Redeem a reward, deducting DB-backed points and persisting the claim."""
+    token = _extract_bearer_token(request.headers.get("Authorization"))
+    if not token:
+        return jsonify({"success": False, "error": "Authorization bearer token required"}), 401
+
+    try:
+        supabase_client = supabase_as_user(token)
+    except Exception as exc:
+        return jsonify({"success": False, "error": f"Supabase configuration error: {exc}"}), 500
+
+    user_id = _jwt_subject(token)
+    if not user_id:
+        return jsonify({"success": False, "error": "Invalid Supabase token"}), 401
+
+    data = request.get_json(silent=True) or {}
+    reward_id = _safe_int(data.get("reward_id"), 0)
+    reward_code = data.get("reward_code")
+    reward_title = data.get("reward_title")
+    if reward_id <= 0 and not isinstance(reward_code, str) and not isinstance(reward_title, str):
+        return jsonify({"success": False, "error": "reward_id, reward_code, or reward_title is required"}), 400
+
+    try:
+        reward_row = _resolve_reward_row(
+            supabase_client=supabase_client,
+            reward_id=reward_id if reward_id > 0 else None,
+            reward_code=reward_code if isinstance(reward_code, str) else None,
+            reward_title=reward_title if isinstance(reward_title, str) else None,
+        )
+        if not reward_row or reward_row.get("is_active") is False:
+            return jsonify({"success": False, "error": "Reward not found or inactive"}), 404
+
+        resolved_reward_id = _safe_int(reward_row.get("id"), reward_id)
+
+        redeem_resp = supabase_client.rpc("redeem_reward", {"p_reward_id": resolved_reward_id}).execute()
+        redeem_error = getattr(redeem_resp, "error", None)
+        if redeem_error:
+            redeem_error_text = _error_text(redeem_error)
+            if "INSUFFICIENT_POINTS" in redeem_error_text:
+                return jsonify({"success": False, "error": "Not enough points to redeem this reward"}), 400
+            if "public.redeem_reward" in redeem_error_text or "PGRST202" in redeem_error_text:
+                return jsonify({
+                    "success": False,
+                    "error": "Supabase function public.redeem_reward is missing. Apply backend/sql/20260301_reward_redemption.sql.",
+                }), 500
+            raise RuntimeError(redeem_error)
+
+        redeem_row = _first_row(redeem_resp)
+        if not redeem_row:
+            raise RuntimeError("Reward redemption returned no data")
+
+        claim_id = redeem_row.get("claim_id") or redeem_row.get("id")
+        promo_code = redeem_row.get("promo_code") or _promo_code_from_claim_id(claim_id)
+        response_reward = {
+            "id": resolved_reward_id,
+            "code": reward_row.get("code"),
+            "title": reward_row.get("title") or reward_row.get("code") or f"Reward {resolved_reward_id}",
+            "description": reward_row.get("description") or "",
+            "cost_points": _safe_int(reward_row.get("cost_points"), 0),
+            "is_active": bool(reward_row.get("is_active", True)),
+            "created_at": reward_row.get("created_at"),
+        }
+
+        return jsonify({
+            "success": True,
+            "points_total": _safe_int(redeem_row.get("points_total"), 0),
+            "already_redeemed": bool(redeem_row.get("already_redeemed")),
+            "claim": {
+                "id": claim_id,
+                "reward_id": _safe_int(redeem_row.get("reward_id"), resolved_reward_id),
+                "claimed_at": redeem_row.get("claimed_at"),
+                "status": redeem_row.get("status") or "claimed",
+                "promo_code": promo_code,
+                "reward": response_reward,
+            },
+        })
+    except Exception as exc:
+        return jsonify({"success": False, "error": f"Failed to redeem reward: {exc}"}), 500
 
 
 # ---------------------------------------------------------------------------

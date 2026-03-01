@@ -80,6 +80,136 @@ let supabaseClient = null;
 let authState = { session: null };
 let appInitialized = false;
 
+function readStoredSupabaseToken(storage) {
+    if (!storage) return null;
+    try {
+        for (let i = 0; i < storage.length; i += 1) {
+            const key = storage.key(i);
+            if (!key || !key.startsWith('sb-') || !key.endsWith('-auth-token')) {
+                continue;
+            }
+
+            const raw = storage.getItem(key);
+            if (!raw) continue;
+
+            const parsed = JSON.parse(raw);
+            const token =
+                parsed?.access_token ||
+                parsed?.currentSession?.access_token ||
+                parsed?.session?.access_token ||
+                parsed?.data?.session?.access_token ||
+                null;
+            if (token) {
+                return token;
+            }
+        }
+    } catch (err) {
+        console.warn('Could not read Supabase token from storage', err);
+    }
+    return null;
+}
+
+function getBrowserStorage(kind) {
+    try {
+        return window[kind];
+    } catch (err) {
+        console.warn(`Could not access ${kind}`, err);
+        return null;
+    }
+}
+
+function getStoredSupabaseToken() {
+    return readStoredSupabaseToken(getBrowserStorage('localStorage')) || readStoredSupabaseToken(getBrowserStorage('sessionStorage'));
+}
+
+const PROGRESS_STORAGE_KEYS = {
+    USER_ID: 'gatwick-go-user-id',
+    POINTS: 'gatwick-go-points',
+    COLLECTION: 'gatwick-go-collection',
+    REDEEMED: 'gatwick-go-redeemed',
+    TICKET_SESSION: 'gatwick-go-ticket-session',
+};
+
+function getProgressStorage() {
+    return getBrowserStorage('sessionStorage') || getBrowserStorage('localStorage');
+}
+
+function readProgressItem(key, fallback) {
+    const sessionStore = getBrowserStorage('sessionStorage');
+    const localStore = getBrowserStorage('localStorage');
+    try {
+        const sessionValue = sessionStore?.getItem(key);
+        if (sessionValue) {
+            return JSON.parse(sessionValue);
+        }
+
+        const localValue = localStore?.getItem(key);
+        if (!localValue) return fallback;
+
+        const parsed = JSON.parse(localValue);
+        sessionStore?.setItem(key, localValue);
+        return parsed;
+    } catch (err) {
+        console.warn(`Could not read progress key ${key}`, err);
+        return fallback;
+    }
+}
+
+function writeProgressItem(key, value) {
+    const storage = getProgressStorage();
+    if (!storage) return;
+    try {
+        storage.setItem(key, JSON.stringify(value));
+        getBrowserStorage('localStorage')?.removeItem(key);
+    } catch (err) {
+        console.warn(`Could not write progress key ${key}`, err);
+    }
+}
+
+function clearProgressStorage() {
+    Object.values(PROGRESS_STORAGE_KEYS).forEach((key) => {
+        getBrowserStorage('sessionStorage')?.removeItem(key);
+        getBrowserStorage('localStorage')?.removeItem(key);
+    });
+}
+
+function upsertProgressCard(card) {
+    const current = readProgressItem(PROGRESS_STORAGE_KEYS.COLLECTION, []);
+    const collection = Array.isArray(current) ? current.filter((entry) => entry?.id !== card.id) : [];
+    const isNewCard = collection.length === (Array.isArray(current) ? current.length : 0);
+    collection.unshift(card);
+    writeProgressItem(PROGRESS_STORAGE_KEYS.COLLECTION, collection);
+    return isNewCard;
+}
+
+function syncSessionPoints(apiResult) {
+    const awarded = Number.isFinite(apiResult?.points_awarded) ? Number(apiResult.points_awarded) : 50;
+    if (Number.isFinite(apiResult?.points_total)) {
+        writeProgressItem(PROGRESS_STORAGE_KEYS.POINTS, Number(apiResult.points_total));
+        return Number(apiResult.points_total);
+    }
+
+    const currentPoints = Number(readProgressItem(PROGRESS_STORAGE_KEYS.POINTS, 0)) || 0;
+    const nextPoints = currentPoints + Math.max(0, awarded);
+    writeProgressItem(PROGRESS_STORAGE_KEYS.POINTS, nextPoints);
+    return nextPoints;
+}
+
+function notifyParentOfSessionProgress(payload) {
+    if (!window.parent || window.parent === window) return;
+    try {
+        window.parent.postMessage(
+            {
+                type: 'gatwick-go-session-progress',
+                payload,
+            },
+            '*'
+        );
+    } catch (err) {
+        console.warn('Failed to post session progress to parent window', err);
+    }
+}
+
 const AIRLINE_CARD_META = {
     'British Airways': { id: 'ba', logo: '🇬🇧', color: '#2E3092', country: 'United Kingdom' },
     'easyJet': { id: 'ej', logo: '🟠', color: '#FF6600', country: 'United Kingdom' },
@@ -169,7 +299,8 @@ async function handleSignout() {
     }
     authState.session = null;
     setUserChip(null);
-    showAuth();
+    clearProgressStorage();
+    window.location.href = '/signin';
 }
 
 function bindAuthHandlers() {
@@ -183,12 +314,17 @@ async function restoreSession() {
         showAuth('Supabase configuration missing.');
         return;
     }
-    const { data } = await supabaseClient.auth.getSession();
-    if (data?.session) {
-        authState.session = data.session;
-        onSessionReady(data.session);
-    } else {
-        showAuth();
+    try {
+        const { data } = await supabaseClient.auth.getSession();
+        if (data?.session) {
+            authState.session = data.session;
+            onSessionReady(data.session);
+        } else {
+            showAuth();
+        }
+    } catch (err) {
+        console.error('Failed to restore auth session', err);
+        showAuth('Could not restore your session. Please sign in again.');
     }
     supabaseClient.auth.onAuthStateChange((_event, session) => {
         if (session) {
@@ -197,6 +333,7 @@ async function restoreSession() {
         } else {
             authState.session = null;
             setUserChip(null);
+            clearProgressStorage();
             showAuth();
         }
     });
@@ -230,7 +367,10 @@ function getAirlineCardMeta(name) {
 function buildCachedCaptureCard(apiResult) {
     const classification = apiResult?.result || {};
     const airlineName = classification.airline || apiResult?.captured_airline;
-    const planeType = apiResult?.captured_model || classification.aircraft_family;
+    const planeType =
+        apiResult?.captured_model ||
+        apiResult?.captured_family_display_name ||
+        classification.aircraft_family;
 
     if (!airlineName || airlineName === 'UNKNOWN' || !planeType || planeType === 'UNKNOWN') {
         return null;
@@ -246,9 +386,12 @@ function buildCachedCaptureCard(apiResult) {
 
     const bestFlight = apiResult?.match?.best?.flight || {};
     const meta = getAirlineCardMeta(airlineName);
+    const stableId = apiResult.collection_item_key
+        ? `collection-${apiResult.collection_item_key}`
+        : `capture-${Date.now()}`;
 
     return {
-        id: apiResult.capture_id ? `capture-${apiResult.capture_id}` : `capture-${Date.now()}`,
+        id: stableId,
         airline: {
             id: meta.id,
             name: airlineName,
@@ -266,22 +409,20 @@ function buildCachedCaptureCard(apiResult) {
 function syncLocalProgressCache(apiResult) {
     if (typeof window === 'undefined' || !apiResult) return;
 
-    if (Number.isFinite(apiResult.points_total)) {
-        localStorage.setItem('gatwick-go-points', JSON.stringify(apiResult.points_total));
-    }
-
+    const nextPointsTotal = syncSessionPoints(apiResult);
     const card = buildCachedCaptureCard(apiResult);
-    if (!card) return;
-
-    try {
-        const raw = localStorage.getItem('gatwick-go-collection');
-        const current = raw ? JSON.parse(raw) : [];
-        const collection = Array.isArray(current) ? current.filter((entry) => entry?.id !== card.id) : [];
-        collection.unshift(card);
-        localStorage.setItem('gatwick-go-collection', JSON.stringify(collection));
-    } catch (err) {
-        console.warn('Failed to sync local collection cache', err);
+    let cardCached = false;
+    if (card) {
+        cardCached = upsertProgressCard(card);
     }
+
+    notifyParentOfSessionProgress({
+        pointsAwarded: Number.isFinite(apiResult?.points_awarded) ? Number(apiResult.points_awarded) : 50,
+        pointsTotal: nextPointsTotal,
+        card,
+    });
+
+    return { cardCached, pointsTotal: nextPointsTotal };
 }
 
 // ============================================================================
@@ -391,20 +532,7 @@ async function classifyFrames(frames) {
         }
 
         // Attempt to include Supabase session JWT so backend RLS works
-        let authToken = null;
-        try {
-            for (let i = 0; i < localStorage.length; i++) {
-                const key = localStorage.key(i);
-                if (key && key.startsWith('sb-') && key.endsWith('-auth-token')) {
-                    const raw = localStorage.getItem(key);
-                    const parsed = raw ? JSON.parse(raw) : null;
-                    authToken = parsed?.access_token || parsed?.currentSession?.access_token || null;
-                    if (authToken) break;
-                }
-            }
-        } catch (err) {
-            console.warn('Could not read Supabase token from localStorage', err);
-        }
+        const authToken = getStoredSupabaseToken();
 
         const headers = { 'Content-Type': 'application/json' };
         if (authToken) {
@@ -428,21 +556,35 @@ async function classifyFrames(frames) {
             throw new Error(result.error || 'Unknown error');
         }
 
-        syncLocalProgressCache(result);
+        const sessionProgress = syncLocalProgressCache(result) || {};
         state.lastClassification = result.result;
         displayResults(result.result, result.frames_processed);
         displayMatch(result.match, result.feed, result.result, result.enrichment);
         displayFact(result.enrichment);
         updatePreviewFromResult(result.result);
-        const rewardSuffix = Number.isFinite(result.points_awarded)
+        const rewardSuffix = Number.isFinite(result.points_awarded) && result.points_awarded > 0
             ? ` and +${result.points_awarded} points saved`
             : '';
         const storageWarnings = Array.isArray(result.storage_warnings) ? result.storage_warnings : [];
         if (storageWarnings.length > 0) {
             console.warn('Persistence warnings:', storageWarnings);
         }
+        const matchPercent = Number.isFinite(result.match_score)
+            ? Math.round(result.match_score * 100)
+            : null;
+        const collectionSuffix = sessionProgress.cardCached
+            ? ', session updated'
+            : result.collection_saved
+            ? ', collection updated'
+            : result.already_in_collection
+            ? ', already in collection'
+            : buildCachedCaptureCard(result)
+            ? ', session updated'
+            : matchPercent !== null
+            ? `, match ${matchPercent}% did not qualify`
+            : '';
         showStatus(
-            `Classification successful (${result.frames_processed} frames processed${rewardSuffix}${storageWarnings.length ? ', capture history table missing' : ''})`,
+            `Classification successful (${result.frames_processed} frames processed${rewardSuffix}${collectionSuffix}${storageWarnings.length ? ', check storage warnings' : ''})`,
             'success'
         );
     } catch (error) {

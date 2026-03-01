@@ -6,7 +6,6 @@ from typing import List, Dict, Any
 
 import requests
 
-# configuration lives in a separate module so we can easily change models/timeouts
 from config import (
     GEMINI_MODEL,
     API_TIMEOUT,
@@ -15,8 +14,6 @@ from config import (
     MIN_CONFIDENCE_FAMILY,
 )
 
-# If google.generativeai is available, we'll try to use it. Otherwise we fall back
-# to a direct HTTPS call.
 try:
     import google.generativeai as genai  # type: ignore
 except ImportError:  # pragma: no cover - might not be installed
@@ -25,14 +22,8 @@ except ImportError:  # pragma: no cover - might not be installed
 
 API_KEY = os.getenv("GEMINI_API_KEY")
 
-# only these carriers are relevant for our project; Gemini should be
-# instructed to limit output to this list (UNKNOWN otherwise).  We also
-# keep a simple mapping of the common aircraft families each operator
-# flies for offline reference/testing.
 _VALID_AIRLINES = SUPPORTED_AIRLINES
 
-# mapping of some typical aircraft models/families for each airline
-# this is for human reference, not currently used by the classifier.
 _AIRLINE_MODELS = {
     "easyJet": ["A319", "A320", "A320neo", "A321"],
     "British Airways": ["A320-family", "A350", "A380", "B777", "B787", "B747"],
@@ -46,7 +37,6 @@ _AIRLINE_MODELS = {
     "Delta Air Lines": ["A220", "A320-family", "A330", "B737", "B757", "B767", "B777", "B787"],
 }
 
-# taxonomy of aircraft families we expect
 _ALLOWED_FAMILIES = {
     "A320-family",
     "B737-family",
@@ -66,35 +56,166 @@ _ALLOWED_FAMILIES = {
     "UNKNOWN",
 }
 
+_ALLOWED_MODELS = {
+    "A319",
+    "A320",
+    "A320neo",
+    "A321",
+    "A321neo",
+    "A220-100",
+    "A220-300",
+    "A330-200",
+    "A330-300",
+    "A330-900",
+    "A340-300",
+    "A340-600",
+    "A350-900",
+    "A350-1000",
+    "A380-800",
+    "737-700",
+    "737-800",
+    "737 MAX 8",
+    "737 MAX 9",
+    "747-400",
+    "757-200",
+    "767-300",
+    "767-400",
+    "777-200",
+    "777-300ER",
+    "787-8",
+    "787-9",
+    "787-10",
+    "E190",
+    "E195",
+    "ATR 72-600",
+    "OTHER",
+    "UNKNOWN",
+}
+
+_MODEL_ALIASES = {
+    "A319": "A319",
+    "AIRBUSA319": "A319",
+    "A320": "A320",
+    "AIRBUSA320": "A320",
+    "A320NEO": "A320neo",
+    "AIRBUSA320NEO": "A320neo",
+    "A321": "A321",
+    "AIRBUSA321": "A321",
+    "A321NEO": "A321neo",
+    "AIRBUSA321NEO": "A321neo",
+    "A220": "A220-300",
+    "A220100": "A220-100",
+    "A220300": "A220-300",
+    "AIRBUSA220100": "A220-100",
+    "AIRBUSA220300": "A220-300",
+    "A330": "A330-300",
+    "A330200": "A330-200",
+    "A330300": "A330-300",
+    "A330900": "A330-900",
+    "A330NEO": "A330-900",
+    "AIRBUSA330200": "A330-200",
+    "AIRBUSA330300": "A330-300",
+    "AIRBUSA330900": "A330-900",
+    "A340": "A340-300",
+    "A340300": "A340-300",
+    "A340600": "A340-600",
+    "A350": "A350-900",
+    "A350900": "A350-900",
+    "A3501000": "A350-1000",
+    "A380": "A380-800",
+    "A380800": "A380-800",
+    "AIRBUSA380": "A380-800",
+    "AIRBUSA380800": "A380-800",
+    "737": "737-800",
+    "737700": "737-700",
+    "737800": "737-800",
+    "737MAX8": "737 MAX 8",
+    "737MAX9": "737 MAX 9",
+    "BOEING737700": "737-700",
+    "BOEING737800": "737-800",
+    "BOEING737MAX8": "737 MAX 8",
+    "BOEING737MAX9": "737 MAX 9",
+    "B737": "737-800",
+    "B737700": "737-700",
+    "B737800": "737-800",
+    "B737MAX8": "737 MAX 8",
+    "B737MAX9": "737 MAX 9",
+    "747": "747-400",
+    "747400": "747-400",
+    "BOEING747400": "747-400",
+    "B747": "747-400",
+    "B747400": "747-400",
+    "757": "757-200",
+    "757200": "757-200",
+    "BOEING757200": "757-200",
+    "B757": "757-200",
+    "B757200": "757-200",
+    "767": "767-300",
+    "767300": "767-300",
+    "767400": "767-400",
+    "BOEING767300": "767-300",
+    "BOEING767400": "767-400",
+    "B767": "767-300",
+    "B767300": "767-300",
+    "B767400": "767-400",
+    "777": "777-300ER",
+    "777200": "777-200",
+    "777300ER": "777-300ER",
+    "BOEING777200": "777-200",
+    "BOEING777300ER": "777-300ER",
+    "B777": "777-300ER",
+    "B777200": "777-200",
+    "B777300ER": "777-300ER",
+    "787": "787-9",
+    "7878": "787-8",
+    "7879": "787-9",
+    "78710": "787-10",
+    "BOEING7878": "787-8",
+    "BOEING7879": "787-9",
+    "BOEING78710": "787-10",
+    "BOEING787DREAMLINER": "787-9",
+    "B787": "787-9",
+    "B7878": "787-8",
+    "B7879": "787-9",
+    "B78710": "787-10",
+    "E190": "E190",
+    "EMBRAERE190": "E190",
+    "E195": "E195",
+    "EMBRAERE195": "E195",
+    "ATR72": "ATR 72-600",
+    "ATR72600": "ATR 72-600",
+    "ATR726": "ATR 72-600",
+}
+
 _PROMPT_BASE = (
     """You are an image classifier that looks at a cropped picture of a commercial airplane and \
-    extracts three things: airline/operator brand, coarse aircraft family, and flight phase \
-    (landing, takeoff, cruising, or unknown).  Photos are often low-res or blurry; keep confidence \
-    conservative.  Allowed airlines: easyJet, British Airways, Wizz Air, TUI Airways, Vueling, \
-    Emirates, Qatar Airways, Turkish Airlines, Norse Atlantic Airways, Delta Air Lines (otherwise \
-    use "UNKNOWN").  Allowed families: A320-family, B737-family, A220, A330, A340, A350, A380, \
-    B747, B757, B767, B777, B787, E-Jet, ATR, OTHER, UNKNOWN.  Flight phase must be one of \
-    landing, takeoff, cruising, unknown.
+    extracts four things: airline/operator brand, exact aircraft model when visible, coarse aircraft family, \
+    and flight phase (landing, takeoff, cruising, or unknown). Photos are often low-res or blurry; keep \
+    confidence conservative. Allowed airlines: easyJet, British Airways, Wizz Air, TUI Airways, Vueling, \
+    Emirates, Qatar Airways, Turkish Airlines, Norse Atlantic Airways, Delta Air Lines (otherwise use \
+    "UNKNOWN"). Allowed families: A320-family, B737-family, A220, A330, A340, A350, A380, B747, B757, \
+    B767, B777, B787, E-Jet, ATR, OTHER, UNKNOWN. Flight phase must be one of landing, takeoff, cruising, unknown.
 
-    Respond with a single JSON object with keys: `airline`, `aircraft_family`, `confidence`, \
-    `cues`, `phase`, `phase_confidence`.  confidences are 0-1.  Cues = list of short visual notes.
+    Respond with a single JSON object with keys: `airline`, `aircraft_model`, `aircraft_family`, \
+    `confidence`, `model_confidence`, `family_confidence`, `cues`, `phase`, `phase_confidence`. \
+    Confidences are 0-1. Cues = list of short visual notes.
 
     Rules:
     - Prefer UNKNOWN over guessing; keep confidence <0.5 when unsure or blurred.
-    - Penalize when distant/occluded/backlit.
-    - Phase hints: nose-up + rotation + runway/ground speed => takeoff; flaps/spoilers, gear \
-      down, low altitude over runway => landing; high altitude/clean configuration => cruising; \
-      otherwise unknown.
-    - Clamp all confidences to [0,1].  Keep format strictly JSON."""
+    - Use `aircraft_model` for the most specific likely type you can see, such as A320neo, 737-800, \
+      787-9, A350-1000, E190, ATR 72-600. Use UNKNOWN if you cannot tell the exact model.
+    - Penalize when distant, occluded, or backlit.
+    - Phase hints: nose-up + rotation + runway/ground speed => takeoff; flaps/spoilers, gear down, \
+      low altitude over runway => landing; high altitude/clean configuration => cruising; otherwise unknown.
+    - Clamp all confidences to [0,1]. Keep format strictly JSON."""
 )
 
 _PROMPT_TOPK = (
-    """Given the same constraints, also provide the topk guesses for airline, plus family and phase. \
-    Output JSON keys: `topk` (array of {{airline, confidence}}), `aircraft_family`, \
-    `family_confidence`, `phase`, `phase_confidence`, `cues`.  `topk` sorted high->low, length ≤ {k}. \
-    Phase must be landing | takeoff | cruising | unknown.  Confidences in [0,1]; be conservative."""
+    """Given the same constraints, also provide the topk guesses for airline, plus model, family, and phase. \
+    Output JSON keys: `topk` (array of {{airline, confidence}}), `aircraft_model`, `model_confidence`, \
+    `aircraft_family`, `family_confidence`, `phase`, `phase_confidence`, `cues`. `topk` sorted high-to-low, \
+    length <= {k}. Phase must be landing | takeoff | cruising | unknown. Confidences in [0,1]; be conservative."""
 )
-
 
 
 def _call_gemini(image_bytes: bytes, prompt: str) -> str:
@@ -105,13 +226,10 @@ def _call_gemini(image_bytes: bytes, prompt: str) -> str:
 
     b64 = base64.b64encode(image_bytes).decode("utf-8")
 
-    # try official SDK first (google-generativeai)
     if genai is not None:
         try:
             genai.configure(api_key=API_KEY)
-            # use whatever model is configured in config.py
             model = genai.GenerativeModel(GEMINI_MODEL)
-            # send prompt + base64 image to Gemini
             response = model.generate_content(
                 [
                     prompt,
@@ -120,10 +238,8 @@ def _call_gemini(image_bytes: bytes, prompt: str) -> str:
             )
             return response.text
         except Exception:
-            # fall through to HTTP-based approach
             pass
 
-    # fallback: manual HTTP request to Gemini API
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={API_KEY}"
     headers = {"Content-Type": "application/json"}
     body: Dict[str, Any] = {
@@ -141,11 +257,9 @@ def _call_gemini(image_bytes: bytes, prompt: str) -> str:
             }
         ]
     }
-    # use configurable timeout
-    r = requests.post(url, headers=headers, json=body, timeout=API_TIMEOUT)
-    r.raise_for_status()
-    data = r.json()
-    # extract text from Gemini response
+    response = requests.post(url, headers=headers, json=body, timeout=API_TIMEOUT)
+    response.raise_for_status()
+    data = response.json()
     if "candidates" in data and len(data["candidates"]) > 0:
         candidate = data["candidates"][0]
         if "content" in candidate and "parts" in candidate["content"]:
@@ -156,18 +270,15 @@ def _call_gemini(image_bytes: bytes, prompt: str) -> str:
 
 
 def _extract_json(text: str) -> Any:
-    """Try to parse a JSON object from the given text.
+    """Try to parse a JSON object from the given text."""
 
-    Returns the parsed object or None if it cannot be extracted.
-    """
     try:
         return json.loads(text)
     except json.JSONDecodeError:
-        # try to pull first {...} block
-        m = re.search(r"\{.*\}", text, re.DOTALL)
-        if m:
+        match = re.search(r"\{.*\}", text, re.DOTALL)
+        if match:
             try:
-                return json.loads(m.group(0))
+                return json.loads(match.group(0))
             except json.JSONDecodeError:
                 pass
     return None
@@ -177,7 +288,6 @@ def _normalize_family(family: str) -> str:
     fam = family.strip()
     if fam in _ALLOWED_FAMILIES:
         return fam
-    # simple case-insensitive mapping for a few common variants
     mapping = {
         "a320": "A320-family",
         "b737": "B737-family",
@@ -192,97 +302,116 @@ def _normalize_family(family: str) -> str:
     return "OTHER" if fam else "UNKNOWN"
 
 
-def classify_aircraft(image_bytes: bytes) -> dict:
-    """Classify a cropped airplane image.
+def _normalize_model(model: str, family: str = "UNKNOWN") -> str:
+    raw = model.strip()
+    if not raw:
+        return "UNKNOWN"
+    if raw in _ALLOWED_MODELS:
+        return raw
 
-    Returns:
-        {
-            "airline": str,
-            "aircraft_family": str,
-            "confidence": float,
-            "cues": List[str],
-            "phase": str,
-            "phase_confidence": float,
-        }
-    """
-    # perform one attempt, if parsing fails retry with a stronger directive
+    key = re.sub(r"[^A-Z0-9]+", "", raw.upper())
+    if key in _MODEL_ALIASES:
+        return _MODEL_ALIASES[key]
+    return "UNKNOWN"
+
+
+def _clamp_confidence(value: Any, default: float = 0.0) -> float:
+    try:
+        return max(0.0, min(1.0, float(value)))
+    except Exception:
+        return default
+
+
+def classify_aircraft(image_bytes: bytes) -> dict:
+    """Classify a cropped airplane image."""
+
     def attempt(prompt: str) -> dict:
-        text = _call_gemini(image_bytes, prompt)
-        data = _extract_json(text)
-        return data
+        return _extract_json(_call_gemini(image_bytes, prompt))
 
     data = attempt(_PROMPT_BASE)
     if data is None:
         data = attempt(_PROMPT_BASE + "\nRespond ONLY with the JSON object and nothing else.")
     if data is None or not isinstance(data, dict):
-        return {"airline": "UNKNOWN", "aircraft_family": "UNKNOWN", "confidence": 0.0, "cues": []}
+        return {
+            "airline": "UNKNOWN",
+            "aircraft_model": "UNKNOWN",
+            "aircraft_family": "UNKNOWN",
+            "confidence": 0.0,
+            "model_confidence": 0.0,
+            "family_confidence": 0.0,
+            "cues": [],
+            "phase": "unknown",
+            "phase_confidence": 0.0,
+        }
 
     airline = data.get("airline", "UNKNOWN") or "UNKNOWN"
-    # check against our allowed list (case-insensitive)
     if airline not in _VALID_AIRLINES:
-        # try a case-insensitive match
-        matched = next((a for a in _VALID_AIRLINES if a.lower() == airline.lower()), None)
-        if matched:
-            airline = matched
-        else:
-            airline = "UNKNOWN"
+        matched = next((candidate for candidate in _VALID_AIRLINES if candidate.lower() == airline.lower()), None)
+        airline = matched or "UNKNOWN"
+
     family = _normalize_family(str(data.get("aircraft_family", "UNKNOWN") or "UNKNOWN"))
-    try:
-        conf = float(data.get("confidence", 0.0))
-    except Exception:
-        conf = 0.0
-    # clamp
-    conf = max(0.0, min(1.0, conf))
+    model = _normalize_model(str(data.get("aircraft_model", "UNKNOWN") or "UNKNOWN"), family)
+    conf = _clamp_confidence(data.get("confidence", 0.0))
+    family_conf = _clamp_confidence(data.get("family_confidence", conf), conf)
+    model_conf = _clamp_confidence(data.get("model_confidence", family_conf), family_conf)
+
     cues = data.get("cues", [])
     if not isinstance(cues, list):
         cues = []
 
     def fallback_from_topk() -> dict:
-        """When airline is UNKNOWN, pull best guess from a top-k call."""
         top = classify_aircraft_topk(image_bytes, k=3)
         if not top or "topk" not in top or not top["topk"]:
-            return {"airline": "UNKNOWN", "confidence": conf, "cues": cues, "phase": data.get("phase", "unknown"), "phase_confidence": data.get("phase_confidence", 0.0)}
+            return {
+                "airline": "UNKNOWN",
+                "confidence": conf,
+                "cues": cues,
+                "aircraft_model": model,
+                "model_confidence": model_conf,
+                "aircraft_family": family,
+                "family_confidence": family_conf,
+                "phase": data.get("phase", "unknown"),
+                "phase_confidence": data.get("phase_confidence", 0.0),
+            }
         best = next((entry for entry in top["topk"] if entry.get("airline") != "UNKNOWN"), None)
         if not best:
             best = top["topk"][0]
-        try:
-            best_conf = float(best.get("confidence", 0.0))
-        except Exception:
-            best_conf = 0.0
+        best_conf = _clamp_confidence(best.get("confidence", 0.0))
         return {
             "airline": best.get("airline", "UNKNOWN") or "UNKNOWN",
-            "confidence": max(0.0, min(1.0, best_conf)),
+            "confidence": best_conf,
             "cues": top.get("cues", cues),
+            "aircraft_model": top.get("aircraft_model", model),
+            "model_confidence": top.get("model_confidence", model_conf),
             "aircraft_family": top.get("aircraft_family", family),
-            "family_confidence": top.get("family_confidence", 0.0),
+            "family_confidence": top.get("family_confidence", family_conf),
             "phase": top.get("phase", data.get("phase", "unknown")),
             "phase_confidence": top.get("phase_confidence", data.get("phase_confidence", 0.0)),
             "fallback_used": True,
         }
 
-    # If model said UNKNOWN or confidence is below threshold, choose best-guess instead.
     if airline.upper() == "UNKNOWN" or conf < MIN_CONFIDENCE_AIRLINE:
-        fb = fallback_from_topk()
-        airline = fb["airline"]
-        conf = fb["confidence"]
-        cues = fb.get("cues", cues)
-        family = fb.get("aircraft_family", family)
+        fallback = fallback_from_topk()
+        airline = fallback["airline"]
+        conf = _clamp_confidence(fallback["confidence"], conf)
+        cues = fallback.get("cues", cues)
+        family = _normalize_family(str(fallback.get("aircraft_family", family) or family))
+        family_conf = _clamp_confidence(fallback.get("family_confidence", family_conf), family_conf)
+        model = _normalize_model(str(fallback.get("aircraft_model", model) or model), family)
+        model_conf = _clamp_confidence(fallback.get("model_confidence", model_conf), model_conf)
 
-    # phase parsing
-    phase_raw = data.get("phase", "unknown") or "unknown"
-    phase = str(phase_raw).lower()
+    phase = str(data.get("phase", "unknown") or "unknown").lower()
     if phase not in {"landing", "takeoff", "cruising", "unknown"}:
         phase = "unknown"
-    try:
-        phase_conf = float(data.get("phase_confidence", 0.0))
-    except Exception:
-        phase_conf = 0.0
-    phase_conf = max(0.0, min(1.0, phase_conf))
+    phase_conf = _clamp_confidence(data.get("phase_confidence", 0.0))
 
     return {
         "airline": airline,
+        "aircraft_model": model,
         "aircraft_family": family,
         "confidence": conf,
+        "model_confidence": model_conf,
+        "family_confidence": family_conf,
         "cues": cues,
         "phase": phase,
         "phase_confidence": phase_conf,
@@ -290,90 +419,78 @@ def classify_aircraft(image_bytes: bytes) -> dict:
 
 
 def classify_aircraft_topk(image_bytes: bytes, k: int = 3) -> dict:
-    """Return top-k airline guesses plus family.
+    """Return top-k airline guesses plus model and family."""
 
-    Output structure:
-        {
-            "topk": [{"airline": str, "confidence": float}, ...],
-            "aircraft_family": str,
-            "family_confidence": float,
-            "phase": str,
-            "phase_confidence": float,
-            "cues": List[str],
-        }
-    """
     prompt = _PROMPT_TOPK.format(k=k)
 
     data = _extract_json(_call_gemini(image_bytes, prompt))
     if data is None:
         data = _extract_json(_call_gemini(image_bytes, prompt + "\nReply with JSON only."))
     if data is None or not isinstance(data, dict):
-        return {"topk": [], "aircraft_family": "UNKNOWN", "family_confidence": 0.0, "cues": []}
+        return {
+            "topk": [],
+            "aircraft_model": "UNKNOWN",
+            "model_confidence": 0.0,
+            "aircraft_family": "UNKNOWN",
+            "family_confidence": 0.0,
+            "phase": "unknown",
+            "phase_confidence": 0.0,
+            "cues": [],
+        }
 
     topk = data.get("topk", [])
     if not isinstance(topk, list):
         topk = []
-    # clamp confidences and sanitize airline names (filter to our list)
+
     sanitized: List[Dict[str, Any]] = []
     for entry in topk[:k]:
         if not isinstance(entry, dict):
             continue
-        al = entry.get("airline", "UNKNOWN") or "UNKNOWN"
-        if al not in _VALID_AIRLINES:
-            matched = next((a for a in _VALID_AIRLINES if a.lower() == al.lower()), None)
-            if matched:
-                al = matched
-            else:
-                al = "UNKNOWN"
-        try:
-            cf = float(entry.get("confidence", 0.0))
-        except Exception:
-            cf = 0.0
-        cf = max(0.0, min(1.0, cf))
-        sanitized.append({"airline": al, "confidence": cf})
+        airline = entry.get("airline", "UNKNOWN") or "UNKNOWN"
+        if airline not in _VALID_AIRLINES:
+            matched = next((candidate for candidate in _VALID_AIRLINES if candidate.lower() == airline.lower()), None)
+            airline = matched or "UNKNOWN"
+        confidence = _clamp_confidence(entry.get("confidence", 0.0))
+        sanitized.append({"airline": airline, "confidence": confidence})
+
     family = _normalize_family(str(data.get("aircraft_family", "UNKNOWN") or "UNKNOWN"))
-    try:
-        fam_conf = float(data.get("family_confidence", 0.0))
-    except Exception:
-        fam_conf = 0.0
-    fam_conf = max(0.0, min(1.0, fam_conf))
+    model = _normalize_model(str(data.get("aircraft_model", "UNKNOWN") or "UNKNOWN"), family)
+    family_conf = _clamp_confidence(data.get("family_confidence", 0.0))
+    model_conf = _clamp_confidence(data.get("model_confidence", family_conf), family_conf)
+
     cues = data.get("cues", [])
     if not isinstance(cues, list):
         cues = []
+
     phase = str(data.get("phase", "unknown") or "unknown").lower()
     if phase not in {"landing", "takeoff", "cruising", "unknown"}:
         phase = "unknown"
-    try:
-        p_conf = float(data.get("phase_confidence", 0.0))
-    except Exception:
-        p_conf = 0.0
-    p_conf = max(0.0, min(1.0, p_conf))
+    phase_conf = _clamp_confidence(data.get("phase_confidence", 0.0))
 
     return {
         "topk": sanitized,
+        "aircraft_model": model,
+        "model_confidence": model_conf,
         "aircraft_family": family,
-        "family_confidence": fam_conf,
+        "family_confidence": family_conf,
         "phase": phase,
-        "phase_confidence": p_conf,
+        "phase_confidence": phase_conf,
         "cues": cues,
     }
 
 
-# Example usage snippet
 if __name__ == "__main__":
-    # this block demonstrates how the functions can be used; remove or modify for production.
     import sys
 
     if len(sys.argv) < 2:
         print("Usage: python gemini_classifier.py <image-file>")
-        sys.exit(1)
+        raise SystemExit(1)
 
-    path = sys.argv[1]
-    with open(path, "rb") as f:
-        img = f.read()
+    with open(sys.argv[1], "rb") as handle:
+        image = handle.read()
 
     print("=== single classification ===")
-    print(classify_aircraft(img))
+    print(classify_aircraft(image))
 
     print("=== top-k classification ===")
-    print(classify_aircraft_topk(img, k=5))
+    print(classify_aircraft_topk(image, k=5))

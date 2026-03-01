@@ -6,6 +6,9 @@ const nextConfig = {
   typescript: {
     ignoreBuildErrors: true,
   },
+  turbopack: {
+    root: __dirname,
+  },
   allowedDevOrigins: ["http://10.1.82.76:3000"],
 };
 
