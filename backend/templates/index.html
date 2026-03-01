@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Aircraft Detection | Gatwick GO!</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        gatwick: {
+                            blue: '#1e3877',
+                            red: '#e60000',
+                            light: '#f8f9fa'
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        ::-webkit-scrollbar { display: none; }
+        body { -ms-overflow-style: none; scrollbar-width: none; background-color: #e5e7eb; }
+        .app-container { min-height: 100vh; max-width: 480px; margin: 0 auto; background-color: #f8f9fa; box-shadow: 0 0 20px rgba(0,0,0,0.1); position: relative; overflow-x: hidden;}
+        video { object-fit: cover; border-radius: 1.5rem; }
+        
+        /* Toast notification animation */
+        .toast-enter { transform: translateY(-100%); opacity: 0; }
+        .toast-active { transform: translateY(0); opacity: 1; transition: all 0.3s ease-out; }
+    </style>
+</head>
+<body class="text-slate-800 font-sans antialiased">
+
+<div class="app-container flex flex-col">
+    
+    <header class="bg-white pt-10 pb-4 px-6 flex items-center justify-between border-b border-gray-100 sticky top-0 z-10">
+        <div class="flex items-center space-x-2 border-l-4 border-gatwick-red pl-2">
+            <h1 class="text-xl font-bold tracking-tight text-slate-900 uppercase">Gatwick GO!</h1>
+        </div>
+        <button id="clear-btn" class="w-8 h-8 rounded-full border border-slate-200 flex items-center justify-center text-slate-400 hover:bg-slate-50 active:bg-slate-100 transition-colors">
+            <i class="fa-solid fa-rotate-right text-sm"></i>
+        </button>
+    </header>
+
+    <div id="status-message" class="absolute top-20 left-4 right-4 z-50 text-center py-2 px-4 rounded-lg text-sm font-semibold shadow-md toast-enter hidden">
+        </div>
+
+    <main class="flex-1 p-4 pb-24 overflow-y-auto space-y-5">
+
+        <div class="bg-white rounded-2xl p-4 shadow-sm border border-gray-50">
+            <div class="flex justify-between items-center mb-4 bg-slate-100 p-1 rounded-lg">
+                <button id="mode-live" class="flex-1 py-1.5 text-sm font-semibold rounded-md bg-white shadow-sm text-gatwick-blue transition-all">Live (OpenSky)</button>
+                <button id="mode-sandbox" class="flex-1 py-1.5 text-sm font-medium rounded-md text-slate-500 hover:text-slate-700 transition-all">Sandbox</button>
+            </div>
+            
+            <div class="flex items-center justify-between">
+                <div class="flex items-center space-x-3">
+                    <button id="loc-btn" class="w-10 h-10 rounded-full bg-blue-50 flex items-center justify-center text-gatwick-blue hover:bg-blue-100 transition-colors shrink-0">
+                        <i class="fa-solid fa-location-crosshairs"></i>
+                    </button>
+                    <div>
+                        <p class="text-sm font-semibold text-slate-700">Use My Location</p>
+                        <p class="text-xs text-slate-400" id="loc-status">Using default: LGW</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <a href="/model" class="block bg-gradient-to-r from-gatwick-blue to-gatwick-red text-white rounded-2xl p-4 shadow-md transition hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gatwick-red">
+            <div class="flex items-center justify-between">
+                <div>
+                    <p class="text-sm font-semibold uppercase tracking-wide opacity-80">New</p>
+                    <h2 class="text-xl font-bold">Try the Model UI</h2>
+                    <p class="text-sm opacity-80">Opens the standalone model experience (no backend wiring yet).</p>
+                </div>
+                <div class="text-3xl">→</div>
+            </div>
+        </a>
+
+        <div class="relative w-full aspect-[3/4] bg-slate-900 rounded-[1.5rem] overflow-hidden shadow-lg flex flex-col items-center justify-center">
+            <video id="webcam-video" muted autoplay playsinline class="absolute inset-0 w-full h-full"></video>
+            <!-- Use object-contain so the full aircraft stays visible inside the frame -->
+            <img id="preview-image" class="absolute inset-0 w-full h-full object-contain bg-slate-900 rounded-[1.5rem] hidden z-[1]" alt="Captured frame preview">
+            <canvas id="canvas" class="hidden"></canvas>
+            
+            <div id="loading-overlay" class="absolute inset-0 bg-slate-900/70 backdrop-blur-sm hidden flex-col items-center justify-center z-10 text-white transition-opacity">
+                <i class="fa-solid fa-circle-notch fa-spin text-4xl mb-3 text-gatwick-blue"></i>
+                <p class="font-medium animate-pulse">Classifying aircraft...</p>
+                <p id="frame-counter" class="text-xs text-slate-300 mt-2 font-mono"></p>
+            </div>
+            
+            <div class="absolute bottom-6 left-0 right-0 flex flex-col items-center space-y-4 px-6 z-0">
+                <button id="capture-btn" class="relative group outline-none">
+                    <div class="absolute inset-0 bg-white rounded-full opacity-20 scale-125 group-active:scale-110 transition-transform"></div>
+                    <div class="w-20 h-20 bg-white rounded-full border-4 border-slate-200 shadow-xl flex items-center justify-center flex-col text-gatwick-blue transform active:scale-95 transition-all">
+                        <i class="fa-solid fa-camera text-2xl mb-1"></i>
+                    </div>
+                </button>
+
+                <label for="file-input" class="bg-white/20 backdrop-blur-md border border-white/30 text-white px-5 py-2 rounded-full text-sm font-medium shadow-sm active:bg-white/30 transition-colors cursor-pointer">
+                    <i class="fa-solid fa-arrow-up-from-bracket mr-2"></i>Upload Photo
+                </label>
+                <input id="file-input" type="file" accept="image/jpeg,image/png" class="hidden">
+            </div>
+        </div>
+
+        <div id="results-section" class="hidden space-y-4">
+            <h2 class="text-sm font-bold text-slate-500 uppercase tracking-wider ml-1">Detection Results</h2>
+            
+            <div class="bg-gradient-to-br from-[#1e3877] to-[#2a4d9e] rounded-2xl p-5 text-white shadow-md relative overflow-hidden">
+                <div class="absolute top-0 right-0 p-3 opacity-10 transform translate-x-4 -translate-y-4">
+                    <i class="fa-solid fa-plane text-8xl"></i>
+                </div>
+                <div class="relative z-10">
+                    <span class="inline-block bg-white/20 text-white text-[10px] px-2 py-1 rounded-md font-bold uppercase tracking-wider mb-2 backdrop-blur-sm border border-white/10">Gemini Vision</span>
+                    <h3 id="resAirline" class="text-2xl font-bold tracking-tight mb-1 truncate">Airline</h3>
+                    <p id="resFamily" class="text-white/80 font-medium text-sm flex items-center truncate">
+                        <i class="fa-solid fa-plane-up mr-2 text-xs"></i> Aircraft Family
+                    </p>
+                </div>
+            </div>
+
+            <div class="bg-white rounded-2xl p-4 shadow-sm border border-gray-100 flex items-center space-x-4">
+                <div class="w-12 h-12 bg-orange-50 rounded-full flex items-center justify-center text-gatwick-red shrink-0">
+                    <i class="fa-solid fa-radar text-lg"></i>
+                </div>
+                <div class="flex-1 overflow-hidden">
+                    <p class="text-xs text-slate-400 font-bold uppercase tracking-wider mb-1">Live Flight Match</p>
+                    <div id="resFlightMatch" class="text-base font-bold text-slate-800 leading-tight truncate">
+                        Searching...
+                    </div>
+                </div>
+            </div>
+
+            <div id="fact-card" class="bg-white rounded-2xl p-4 shadow-sm border border-gray-100 flex space-x-4 items-start hidden">
+                <div class="w-12 h-12 bg-blue-50 rounded-full flex items-center justify-center text-gatwick-blue shrink-0">
+                    <i class="fa-solid fa-lightbulb text-lg"></i>
+                </div>
+                <div class="flex-1 overflow-hidden">
+                    <p class="text-xs text-slate-400 font-bold uppercase tracking-wider mb-1">Aircraft Fact</p>
+                    <div id="resFactText" class="text-sm font-medium text-slate-800 leading-snug">
+                        Fetching fact...
+                    </div>
+                    <a id="resFactSource" class="text-xs text-gatwick-blue underline mt-1 inline-block" href="#" target="_blank" rel="noopener">Source</a>
+                </div>
+            </div>
+
+            <button onclick="toggleModal(true)" class="w-full bg-slate-100 hover:bg-slate-200 active:bg-slate-300 text-slate-700 py-3.5 rounded-xl font-bold text-sm transition-colors border border-slate-200">
+                View Advanced Analysis
+            </button>
+        </div>
+
+    </main>
+</div>
+
+<div id="detailsModal" class="fixed inset-0 z-50 hidden">
+    <div class="absolute inset-0 bg-slate-900/40 backdrop-blur-sm transition-opacity" onclick="toggleModal(false)"></div>
+    <div class="absolute bottom-0 left-0 right-0 w-full max-w-md mx-auto bg-white rounded-t-3xl shadow-2xl transform transition-transform duration-300 max-h-[85vh] flex flex-col">
+        
+        <div class="flex justify-center pt-3 pb-1">
+            <div class="w-12 h-1.5 bg-slate-200 rounded-full"></div>
+        </div>
+        
+        <div class="px-6 pb-4 pt-2 flex justify-between items-center border-b border-gray-100">
+            <h3 class="text-lg font-bold text-slate-800">Advanced Details</h3>
+            <button onclick="toggleModal(false)" class="w-8 h-8 bg-slate-100 rounded-full flex items-center justify-center text-slate-500 hover:bg-slate-200">
+                <i class="fa-solid fa-xmark"></i>
+            </button>
+        </div>
+        
+        <div class="p-6 overflow-y-auto flex-1 text-sm text-slate-600 space-y-6">
+            
+            <div>
+                <h4 class="font-bold text-slate-800 mb-3 flex items-center"><i class="fa-solid fa-brain mr-2 text-gatwick-blue"></i>AI Confidence</h4>
+                <div class="bg-slate-50 p-4 rounded-xl border border-slate-100 space-y-4">
+                    <div>
+                        <div class="flex justify-between mb-1.5">
+                            <span class="font-medium text-slate-600">Classification</span>
+                            <span id="modalConfidence" class="font-bold text-gatwick-blue">--%</span>
+                        </div>
+                        <div class="w-full bg-slate-200 rounded-full h-2">
+                            <div id="barConfidence" class="bg-gatwick-blue h-2 rounded-full transition-all duration-500" style="width: 0%"></div>
+                        </div>
+                    </div>
+                    <div>
+                        <div class="flex justify-between mb-1.5">
+                            <span class="font-medium text-slate-600">Flight Phase: <span id="modalPhase" class="text-slate-800">Unknown</span></span>
+                            <span id="modalPhaseConf" class="font-bold text-gatwick-red">--%</span>
+                        </div>
+                        <div class="w-full bg-slate-200 rounded-full h-2">
+                            <div id="barPhaseConf" class="bg-gatwick-red h-2 rounded-full transition-all duration-500" style="width: 0%"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div>
+                <h4 class="font-bold text-slate-800 mb-3 flex items-center"><i class="fa-solid fa-eye mr-2 text-gatwick-blue"></i>Extracted Visual Cues</h4>
+                <ul id="modalCues" class="bg-slate-50 border border-slate-100 rounded-xl p-4 space-y-2 text-slate-600">
+                    </ul>
+            </div>
+
+            <div>
+                <h4 class="font-bold text-slate-800 mb-3 flex items-center"><i class="fa-solid fa-server mr-2 text-gatwick-blue"></i>Provider Feed Data</h4>
+                <div class="bg-slate-900 text-green-400 p-4 rounded-xl font-mono text-xs overflow-x-auto leading-relaxed" id="modalFeedData">
+                    </div>
+            </div>
+            
+            <div class="text-center text-xs text-slate-400 pt-2 pb-4">
+                Processed from <span id="modalFrames" class="font-bold text-slate-500">0</span> burst frame(s).
+            </div>
+
+        </div>
+    </div>
+</div>
+
+<script src="{{ url_for('static', filename='main.js') }}"></script>
+<script>
+    window.DEFAULT_OBSERVER = {
+        lat: {{ default_observer_lat | tojson }},
+        lon: {{ default_observer_lon | tojson }},
+        radius_km: {{ default_radius_km | tojson }}
+    };
+
+    // Modal logic mapping helper
+    function toggleModal(show) {
+        const modal = document.getElementById('detailsModal');
+        if (show) {
+            modal.classList.remove('hidden');
+        } else {
+            modal.classList.add('hidden');
+        }
+    }
+</script>
+</body>
+</html>

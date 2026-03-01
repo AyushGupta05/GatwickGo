@@ -7,23 +7,92 @@ What you get
 - Live provider hooks (OpenSky ready, FR24 stub) behind a common API.
 - Matcher that fuses classification + location to pick the most likely flight.
 
-Run it
-1) Install deps: `pip install -r requirements.txt`
-2) Set keys:
-   - `GEMINI_API_KEY` (required)
-   - Optional live: `OPENSKY_CLIENT_ID`, `OPENSKY_CLIENT_SECRET` (or `FR24_API_KEY`)
-3) Start: `python app.py` then open http://localhost:5000
+Project Structure
+```
+Gatwick-GO/
+├── backend/               # Python Flask backend
+│   ├── app.py            # Main Flask application
+│   ├── config.py         # Configuration (paths, settings)
+│   ├── camera_burst.py   # Burst capture logic
+│   ├── gemini_classifier.py  # Gemini API integration
+│   ├── flight_feed.py    # Flight data providers
+│   ├── flight_matcher.py # Flight matching algorithm
+│   ├── enrichment.py     # Data enrichment
+│   ├── aircraft_detection_pipeline.py
+│   ├── templates/        # Flask HTML templates
+│   ├── static/          # Static assets (CSS, JS, model UI)
+│   ├── sandbox_feed/    # Test flight data snapshots
+│   ├── tools/           # Utility scripts
+│   ├── testimages/      # Test images
+│   └── requirements.txt # Python dependencies
+│
+└── frontend/             # Next.js frontend (optional)
+    └── gatwick-go/      # Next.js project
+```
 
-API quick reference
+Installation & Setup
+====================
+
+1. Install backend dependencies:
+   ```
+   cd backend
+   pip install -r requirements.txt
+   ```
+
+2. Set environment variables:
+   - `GEMINI_API_KEY` (required): Get from https://aistudio.google.com/app/apikeys
+   - Optional: `OPENSKY_USERNAME`, `OPENSKY_PASSWORD` (for live flight data)
+
+3. Run the application:
+   ```
+   cd backend
+   python app.py
+   ```
+   Then open http://localhost:5000
+
+Configuration
+=============
+
+Edit `backend/config.py` to customize:
+- Airport location and search radius
+- Burst capture settings
+- Flight feed mode (SANDBOX, LIVE, OPENSKY)
+- Confidence thresholds
+
+API Quick Reference
+===================
+
 - POST `/api/classify`
   - body: `{ images: [...base64...], mode: "SANDBOX" | "OPENSKY" | "FR24", location: {lat, lon, radius_km}, match: true }`
   - returns: classifier result + `match` (best flight) + `feed` metadata.
 
-Switching feeds
-- Default mode is SANDBOX (uses `sandbox_feed/` snapshots; updates every 5s).
-- Pass `mode: "LIVE"` or set `FLIGHT_MODE` in `config.py` to hit OpenSky (needs creds).
-- FR24 stub is wired but returns empty until a paid API call is added.
+Flight Feed Modes
+================
 
-Customising the sandbox
-- Snapshots live in `sandbox_feed/`; regenerate with `python tools/generate_sandbox_feed.py`.
-- Edit `config.py` for interval, search radius, or home airport coords.
+- **SANDBOX** (default): Uses test snapshots from `backend/sandbox_feed/`; updates every 5 seconds
+- **OPENSKY**: Connects to OpenSky Network (requires credentials)
+- **FR24**: FlightRadar24 stub (ready for paid API integration)
+
+Regenerate Sandbox Feed
+=======================
+
+```
+cd backend
+python tools/generate_sandbox_feed.py
+```
+
+Testing
+=======
+
+Test local images with the classifier:
+```
+cd backend
+python test_local_images.py
+python test_local_images.py --dir custom_folder
+```
+
+Verify system setup:
+```
+cd backend
+python test_system.py
+```
