@@ -256,6 +256,7 @@ class OpenSkyLiveProvider:
             for s in states:
                 # OpenSky states vector layout: https://opensky-network.org/apidoc/rest.html
                 callsign = (s[1] or "").strip()
+                icao24 = (s[0] or "").strip()
                 lat = s[6]
                 lon = s[5]
                 geo_alt = s[13]  # meters
@@ -272,7 +273,9 @@ class OpenSkyLiveProvider:
 
                 flights.append(
                     {
-                        "flight_number": callsign or s[0] or "UNKNOWN",
+                        "flight_number": callsign or icao24 or "UNKNOWN",
+                        "callsign": callsign or None,
+                        "icao24": icao24 or None,
                         "airline": _airline_from_callsign(callsign),
                         "aircraft_family": "UNKNOWN",
                         "lat": float(lat),
@@ -282,6 +285,10 @@ class OpenSkyLiveProvider:
                         "speed_kt": speed_kt,
                         "status": "unknown",
                         "origin": "unknown",
+                        "origin_icao": None,
+                        "origin_iata": None,
+                        "origin_city": None,
+                        "origin_name": None,
                         "destination": "unknown",
                         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(data.get("time", time.time()))),
                     }

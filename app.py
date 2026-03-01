@@ -8,6 +8,7 @@ and optional flight matching (sandbox replay or live provider).
 import base64
 import os
 from pathlib import Path
+import pathlib
 
 from flask import Flask, render_template, request, jsonify
 
@@ -18,6 +19,13 @@ import config
 
 from flight_feed import get_flight_provider, haversine_km
 from flight_matcher import match_best_flight
+from enrichment import enrich_match, get_fact_for_family
+
+# Optional: modern google.genai client for dev image generation
+try:
+    from google import genai  # type: ignore
+except Exception:  # pragma: no cover
+    genai = None  # type: ignore
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
 
@@ -216,6 +224,12 @@ def classify_endpoint():
                 response_payload["match"] = None
                 response_payload["feed"] = {"mode": mode, "error": str(exc)}
 
+        # Enrichment layer (origin + fact)
+        try:
+            response_payload["enrichment"] = enrich_match(result, response_payload.get("match"), response_payload.get("feed"))
+        except Exception as exc:
+            response_payload["enrichment"] = {"origin": None, "fact": None, "error": str(exc)}
+
         return jsonify(response_payload)
 
     except Exception as e:
@@ -230,6 +244,88 @@ def health_check():
         "status": "ok",
         "api_key_configured": api_key_set,
     })
+
+
+@app.route("/api/fact", methods=["GET"])
+def fact_endpoint():
+    """Return a short fact for an aircraft family."""
+    family = request.args.get("family")
+    if not family:
+        return jsonify({"success": False, "error": "family parameter required"}), 400
+    fact = get_fact_for_family(family)
+    if not fact:
+        return jsonify({"success": False, "error": "No fact found"}), 404
+    return jsonify({"success": True, "family": family, "fact": fact})
+
+
+# ---------------------------------------------------------------------------
+# Dev-only: Gemini Nano Banana image generation for synthetic spotting frames
+# ---------------------------------------------------------------------------
+
+
+def _build_generation_prompt(airline: str, aircraft_family: str, scene: str, idx: int) -> str:
+    angle = ["side-on", "3/4 front", "3/4 rear"][idx % 3]
+    weather = {
+        "final_approach": "low clouds, light haze",
+        "climb_out": "morning mist, slight motion blur",
+        "distant_dot": "heat shimmer, compressed pixels",
+        "bad_weather": "rain streaks on phone lens, gray sky",
+        "night": "airport lights, high ISO grain",
+    }.get(scene, "mild haze")
+    distance = ["close-up with wing detail", "mid-distance over runway", "far with full silhouette"][idx % 3]
+    artifacts = "smartphone photo, slight compression, autofocus shimmer"
+    return (
+        f"Realistic smartphone spotting photo of a {airline} {aircraft_family} on {scene.replace('_', ' ')}; "
+        f"{angle}, {distance}, {weather}, {artifacts}. Capture motion blur and atmospheric depth."
+    )
+
+
+def _generate_images_via_banana(airline: str, aircraft_family: str, scene: str, n: int):
+    if genai is None:
+        raise RuntimeError("google.genai SDK not installed")
+    if not config.GEMINI_API_KEY:
+        raise RuntimeError("GEMINI_API_KEY not set")
+    client = genai.Client(api_key=config.GEMINI_API_KEY)
+    model_name = "gemini-2.0-nano-banana"
+
+    outputs = []
+    for i in range(n):
+        prompt = _build_generation_prompt(airline, aircraft_family, scene, i)
+        resp = client.images.generate(model=model_name, prompt=prompt, n=1)
+        images = getattr(resp, "images", None) or []
+        if not images:
+            continue
+        img_bytes = images[0].image_bytes
+        outputs.append({"prompt": prompt, "b64": base64.b64encode(img_bytes).decode("utf-8")})
+    return outputs
+
+
+@app.route("/api/dev/generate", methods=["POST"])
+def dev_generate():
+    if not getattr(config, "DEV_GENERATION_ENABLED", False):
+        return jsonify({"success": False, "error": "Dev generation disabled"}), 403
+
+    data = request.get_json() or {}
+    airline = data.get("airline") or "unknown airline"
+    family = data.get("aircraft_family") or data.get("family") or "UNKNOWN"
+    scene = data.get("scene") or "final_approach"
+    n = max(1, min(int(data.get("n", 1)), 6))
+    save = bool(data.get("save", False))
+
+    try:
+        outputs = _generate_images_via_banana(airline, family, scene, n)
+        if save and outputs:
+            out_dir = pathlib.Path(getattr(config, "DEV_GENERATION_OUTPUT_DIR", "static/generated"))
+            out_dir.mkdir(parents=True, exist_ok=True)
+            saved = []
+            for idx, item in enumerate(outputs):
+                fname = f"{airline}_{family}_{scene}_{idx}.jpg".replace(" ", "_")
+                (out_dir / fname).write_bytes(base64.b64decode(item["b64"]))
+                saved.append(str(out_dir / fname))
+            return jsonify({"success": True, "images": outputs, "saved": saved})
+        return jsonify({"success": True, "images": outputs})
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc)}), 500
 
 
 @app.errorhandler(404)

@@ -31,6 +31,10 @@ API_TIMEOUT = 30
 # Reads from environment variable
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
+# Dev image generation (Gemini Nano Banana) toggle
+DEV_GENERATION_ENABLED = os.getenv("DEV_GENERATION_ENABLED", "false").lower() == "true"
+DEV_GENERATION_OUTPUT_DIR = os.getenv("DEV_GENERATION_OUTPUT_DIR", "static/generated")
+
 # ============================================================================
 # OUTPUT SETTINGS
 # ============================================================================

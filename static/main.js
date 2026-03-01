@@ -22,6 +22,7 @@ let state = {
     stream: null,
     isCapturing: false,
     lastClassification: null,
+    lastFrames: [],
     mode: 'OPENSKY',
     location: null, // {lat, lon, radius_km}
 };
@@ -29,6 +30,7 @@ let state = {
 // DOM Elements
 const elements = {
     video: document.getElementById('webcam-video'),
+    previewImage: document.getElementById('preview-image'),
     canvas: document.getElementById('canvas'),
     captureBtn: document.getElementById('capture-btn'),
     clearBtn: document.getElementById('clear-btn'),
@@ -46,6 +48,9 @@ const elements = {
     resAirline: document.getElementById('resAirline'),
     resFamily: document.getElementById('resFamily'),
     resFlightMatch: document.getElementById('resFlightMatch'),
+    resFactCard: document.getElementById('fact-card'),
+    resFactText: document.getElementById('resFactText'),
+    resFactSource: document.getElementById('resFactSource'),
     
     // Modal UI Elements
     modalConfidence: document.getElementById('modalConfidence'),
@@ -149,6 +154,7 @@ function sleep(ms) {
 async function classifyFrames(frames) {
     try {
         showStatus('Classifying image...', 'info');
+        state.lastFrames = frames; // keep local copies for preview
 
         const body = {
             images: frames.map((data) => ({ data })),
@@ -184,7 +190,9 @@ async function classifyFrames(frames) {
 
         state.lastClassification = result.result;
         displayResults(result.result, result.frames_processed);
-        displayMatch(result.match, result.feed, result.result);
+        displayMatch(result.match, result.feed, result.result, result.enrichment);
+        displayFact(result.enrichment);
+        updatePreviewFromResult(result.result);
         showStatus(
             `Classification successful (${result.frames_processed} frames processed)`,
             'success'
@@ -205,6 +213,8 @@ async function classifyFrames(frames) {
  */
 function displayResults(result, framesProcessed) {
     elements.resultsSection.classList.remove('hidden');
+    // ensure preview shows current best frame once results are ready
+    updatePreviewFromResult(result);
     
     // 1. Primary Data (UI View)
     const confidencePercent = Math.round((result.confidence || 0) * 100);
@@ -242,28 +252,49 @@ function displayResults(result, framesProcessed) {
 }
 
 /**
+ * Update the preview image after classification.
+ */
+function updatePreviewFromResult(result) {
+    if (!result) return;
+    const bestIdx = getBestFrameIndex(result, state.lastFrames);
+    const bestFrame = state.lastFrames[bestIdx];
+    if (bestFrame) {
+        showPreview(bestFrame);
+    }
+}
+
+/**
  * Display provider + match info
  */
-function displayMatch(match, feed, classification = null) {
+function displayMatch(match, feed, classification = null, enrichment = null) {
     const detectedAirline = (classification?.airline && classification.airline !== 'UNKNOWN') ? classification.airline : null;
     const detectionPercent = Math.round(((classification?.confidence) || 0) * 100);
     const detectionMeta = getConfidenceMeta(detectionPercent);
+    const originData = enrichment?.origin || null;
+    const originCity = originData?.city || match?.best?.flight?.origin_city || match?.best?.flight?.origin;
+    const originIata = originData?.iata || match?.best?.flight?.origin_iata;
+    const originIcao = originData?.icao || match?.best?.flight?.origin_icao;
+    const originText = formatOrigin(originCity, originIata, originIcao);
 
     if (!match || !match.best) {
-        const fallbackText = detectedAirline
+        let fallbackText = detectedAirline
             ? `Gemini: ${escapeHtml(detectedAirline)} (${detectionMeta.level} ${detectionPercent}%)`
             : 'No matching flights found nearby.';
+        if (originText) {
+            fallbackText += `<br><span class="text-[11px] text-slate-600">Coming from: ${originText}</span>`;
+        }
         elements.resFlightMatch.innerHTML = `<span class="text-slate-500 font-normal">${fallbackText}</span>`;
     } else {
         const best = match.best.flight || {};
         const score = Math.round((match.best.score || 0) * 100);
-        const altitudeRaw = best.baro_altitude ?? best.alt_ft;
-        const altitude = altitudeRaw ? Math.round(altitudeRaw) + (best.baro_altitude ? 'm' : 'ft') : 'N/A';
         const airlineLabel = best.airline || detectedAirline || 'Unknown';
         
         let subtitle = `
-            ${escapeHtml(airlineLabel)} • Match Score: ${score}% • Alt: ${altitude}
+            ${escapeHtml(airlineLabel)} • Match Score: ${score}%
         `;
+        if (originText) {
+            subtitle += `<br><span class="text-[11px] text-slate-600">Coming from: ${originText}</span>`;
+        }
         if (detectedAirline) {
             subtitle += `<br><span class="text-[10px] font-semibold px-2 py-0.5 rounded-full inline-flex items-center ${detectionMeta.pill}">
                 Gemini: ${escapeHtml(detectedAirline)} (${detectionMeta.level} ${detectionPercent}%)
@@ -291,6 +322,30 @@ function displayMatch(match, feed, classification = null) {
         <div class="mb-1"><span class="text-slate-400">Flights Fetched:</span> ${flightCount}</div>
         ${observer ? `<div><span class="text-slate-400">Observer Data:</span> ${observer.lat.toFixed(4)}, ${observer.lon.toFixed(4)} (Radius: ${observer.radius_km || '—'}km)</div>` : ''}
     `;
+}
+
+/**
+ * Display grounded aircraft fact if available.
+ */
+function displayFact(enrichment) {
+    const card = elements.resFactCard;
+    if (!card) return;
+    const fact = enrichment?.fact;
+    if (!fact || !fact.text) {
+        card.classList.add('hidden');
+        return;
+    }
+    elements.resFactText.textContent = fact.text;
+
+    const src = (fact.sources && fact.sources[0]) || null;
+    if (src && src.url) {
+        elements.resFactSource.textContent = src.title || src.url;
+        elements.resFactSource.href = src.url;
+        elements.resFactSource.classList.remove('hidden');
+    } else {
+        elements.resFactSource.classList.add('hidden');
+    }
+    card.classList.remove('hidden');
 }
 
 /**
@@ -325,12 +380,14 @@ async function handleFileUpload(event) {
     if (!file) return;
 
     elements.resultsSection.classList.add('hidden');
+    hidePreview();
     elements.loadingOverlay.classList.remove('hidden');
     elements.loadingOverlay.classList.add('flex');
     showStatus(`Classifying ${file.name}...`, 'info');
 
     try {
         const dataUrl = await readFileAsDataURL(file);
+        state.lastFrames = [dataUrl];
         await classifyFrames([dataUrl]);
     } catch (error) {
         console.error('Upload classify error:', error);
@@ -398,6 +455,25 @@ function escapeHtml(text) {
 }
 
 /**
+ * Show captured frame preview over the video area.
+ */
+function showPreview(dataUrl) {
+    if (!dataUrl) return;
+    elements.previewImage.src = dataUrl;
+    elements.previewImage.classList.remove('hidden');
+    elements.video.classList.add('opacity-0');
+}
+
+/**
+ * Hide preview and reveal live video.
+ */
+function hidePreview() {
+    elements.previewImage.classList.add('hidden');
+    elements.previewImage.src = '';
+    elements.video.classList.remove('opacity-0');
+}
+
+/**
  * Map a 0-100 confidence score to UI styles and labels.
  */
 function getConfidenceMeta(percent) {
@@ -408,6 +484,42 @@ function getConfidenceMeta(percent) {
         return { level: 'Medium', pill: 'bg-amber-100 text-amber-800', bar: 'bg-amber-500' };
     }
     return { level: 'Low', pill: 'bg-red-100 text-red-800', bar: 'bg-red-500' };
+}
+
+/**
+ * Decide which captured frame to display using sharpness scores/source frame indices.
+ */
+function getBestFrameIndex(result, frames) {
+    if (!frames || frames.length === 0) return 0;
+    if (result && result.sharpness_scores) {
+        let bestIdx = 0;
+        let bestScore = -Infinity;
+        Object.entries(result.sharpness_scores).forEach(([k, v]) => {
+            const idx = parseInt(k, 10);
+            const score = Number(v) || 0;
+            if (score > bestScore) {
+                bestScore = score;
+                bestIdx = idx;
+            }
+        });
+        if (bestIdx < frames.length) return bestIdx;
+    }
+    if (result && Array.isArray(result.source_frames) && result.source_frames.length > 0) {
+        const idx = result.source_frames[0];
+        if (Number.isInteger(idx) && idx < frames.length) return idx;
+    }
+    return 0;
+}
+
+/**
+ * Format origin display text.
+ */
+function formatOrigin(origin, iata, icao) {
+    if (!origin && !iata && !icao) return '';
+    const code = iata || icao || '';
+    if (origin && code) return `${escapeHtml(origin)} (${escapeHtml(code)})`;
+    if (origin) return escapeHtml(origin);
+    return escapeHtml(code);
 }
 
 // ============================================================================
@@ -475,6 +587,7 @@ async function handleCapture() {
     state.isCapturing = true;
     elements.captureBtn.disabled = true;
     elements.clearBtn.disabled = true;
+    hidePreview();
     
     // Show loading UI
     elements.resultsSection.classList.add('hidden');
@@ -505,8 +618,11 @@ async function handleCapture() {
  */
 function handleClear() {
     state.lastClassification = null;
+    state.lastFrames = [];
     elements.resultsSection.classList.add('hidden');
     clearFrameCounter();
+    hidePreview();
+    if (elements.resFactCard) elements.resFactCard.classList.add('hidden');
     showStatus('Results cleared', 'info');
 }
 

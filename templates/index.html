@@ -71,6 +71,8 @@
 
         <div class="relative w-full aspect-[3/4] bg-slate-900 rounded-[1.5rem] overflow-hidden shadow-lg flex flex-col items-center justify-center">
             <video id="webcam-video" muted autoplay playsinline class="absolute inset-0 w-full h-full"></video>
+            <!-- Use object-contain so the full aircraft stays visible inside the frame -->
+            <img id="preview-image" class="absolute inset-0 w-full h-full object-contain bg-slate-900 rounded-[1.5rem] hidden z-[1]" alt="Captured frame preview">
             <canvas id="canvas" class="hidden"></canvas>
             
             <div id="loading-overlay" class="absolute inset-0 bg-slate-900/70 backdrop-blur-sm hidden flex-col items-center justify-center z-10 text-white transition-opacity">
@@ -119,6 +121,19 @@
                     <div id="resFlightMatch" class="text-base font-bold text-slate-800 leading-tight truncate">
                         Searching...
                     </div>
+                </div>
+            </div>
+
+            <div id="fact-card" class="bg-white rounded-2xl p-4 shadow-sm border border-gray-100 flex space-x-4 items-start hidden">
+                <div class="w-12 h-12 bg-blue-50 rounded-full flex items-center justify-center text-gatwick-blue shrink-0">
+                    <i class="fa-solid fa-lightbulb text-lg"></i>
+                </div>
+                <div class="flex-1 overflow-hidden">
+                    <p class="text-xs text-slate-400 font-bold uppercase tracking-wider mb-1">Aircraft Fact</p>
+                    <div id="resFactText" class="text-sm font-medium text-slate-800 leading-snug">
+                        Fetching fact...
+                    </div>
+                    <a id="resFactSource" class="text-xs text-gatwick-blue underline mt-1 inline-block" href="#" target="_blank" rel="noopener">Source</a>
                 </div>
             </div>
 
