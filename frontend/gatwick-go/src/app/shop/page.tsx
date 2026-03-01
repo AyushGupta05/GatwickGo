@@ -5,6 +5,7 @@ import { QRCodeSVG } from "qrcode.react";
 import { getAvailableRewards } from "@/lib/data";
 import type { Reward } from "@/lib/data";
 import { getPoints, redeemReward, getRedeemedRewards } from "@/lib/store";
+import { useAuth, AUTH_ON } from "@/lib/auth";
 
 interface ActiveReward {
   id: string;
@@ -18,6 +19,7 @@ export default function ShopPage() {
   const [redeemed, setRedeemed] = useState<Record<string, string>>({});
   const [justRedeemed, setJustRedeemed] = useState<string | null>(null);
   const [activeReward, setActiveReward] = useState<ActiveReward | null>(null);
+  const { signOut, email } = useAuth();
   const rewards = getAvailableRewards();
 
   useEffect(() => {
@@ -58,8 +60,16 @@ export default function ShopPage() {
       {/* Header */}
       <header className="flex items-center justify-between">
         <h1 className="text-2xl font-bold text-gatwick-dark">Rewards Shop</h1>
-        <div className="bg-gatwick-blue text-white px-3 py-1.5 rounded-full text-sm font-bold">
-          {points} pts
+        <div className="flex items-center gap-3">
+          <div className="bg-gatwick-blue text-white px-3 py-1.5 rounded-full text-sm font-bold">
+            {points} pts
+          </div>
+          <button
+            onClick={signOut}
+            className="text-xs text-gatwick-red font-medium"
+          >
+            Sign out
+          </button>
         </div>
       </header>
 
