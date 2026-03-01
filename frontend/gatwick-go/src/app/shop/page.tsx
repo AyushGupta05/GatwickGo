@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { QRCodeSVG } from "qrcode.react";
 import { getAvailableRewards, type Reward } from "@/lib/data";
 import {
+  applyManualShopCreditTopUp,
   getPoints,
   getRedeemedRewards,
   redeemReward,
@@ -31,6 +32,8 @@ export default function ShopPage() {
   const rewards = PRESET_REWARDS;
 
   useEffect(() => {
+    applyManualShopCreditTopUp();
+
     const sync = () => {
       const snapshot = readProgressSnapshot();
       setPoints(snapshot.points);
