@@ -87,15 +87,20 @@ export default function CameraPage() {
     null
   );
   const [timeRemaining, setTimeRemaining] = useState<number>(0);
+  const [sessionChecked, setSessionChecked] = useState(false);
+  const [hasActiveSession, setHasActiveSession] = useState(false);
 
   // --------------- Check for existing session on mount ---------------
   useEffect(() => {
     const session = getTicketSession();
     if (session) {
-      setActiveTicket(session.ticket);
-      setStep("capture");
+      setHasActiveSession(true);
+      router.replace("/model");
+      return;
     }
-  }, []);
+    setHasActiveSession(false);
+    setSessionChecked(true);
+  }, [router]);
 
   // --------------- Countdown timer ---------------
   useEffect(() => {
@@ -217,10 +222,12 @@ export default function CameraPage() {
 
   // Start camera on mount
   useEffect(() => {
+    if (!sessionChecked || hasActiveSession) return;
+
     startCamera();
     return () => stopCamera();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [sessionChecked, hasActiveSession]);
 
   // --------------- QR Code Scanning (Step 1) ---------------
 
@@ -666,6 +673,9 @@ export default function CameraPage() {
   };
 
   return (
+    !sessionChecked ? (
+      <div className="fixed inset-0 bg-black z-40" />
+    ) : (
     <div className="fixed inset-0 bg-black z-40 flex flex-col">
       {/* Camera viewfinder */}
       <div className="relative flex-1 overflow-hidden">
@@ -897,7 +907,7 @@ export default function CameraPage() {
 
       {/* Bottom controls */}
       {step === "ticket" && (
-        <div className="bg-gatwick-dark p-6 safe-bottom">
+        <div className="bg-gatwick-dark px-6 pt-4 pb-6 safe-bottom">
           <div className="text-center mb-2">
             <p className="text-white font-bold text-lg">Scan Your Ticket</p>
             <p className="text-white/60 text-xs mt-1">
@@ -932,7 +942,7 @@ export default function CameraPage() {
           </div>
 
           {/* Divider */}
-          <div className="flex items-center gap-3 my-3">
+          <div className="flex items-center gap-3 mt-2 mb-3">
             <div className="flex-1 h-px bg-white/10" />
             <span className="text-white/40 text-xs">or import an image</span>
             <div className="flex-1 h-px bg-white/10" />
@@ -1076,5 +1086,6 @@ export default function CameraPage() {
         </div>
       )}
     </div>
+    )
   );
 }

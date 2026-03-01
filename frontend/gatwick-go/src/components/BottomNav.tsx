@@ -1,8 +1,9 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { getTicketSession } from "@/lib/store";
 
 type Tab = {
   label: string;
@@ -110,9 +111,43 @@ const tabs: Tab[] = [
 
 export default function BottomNav() {
   const pathname = usePathname();
+  const [hasActiveTicketSession, setHasActiveTicketSession] = useState(false);
 
-  // Hide nav on auth pages only
+  useEffect(() => {
+    const updateSessionState = () => {
+      setHasActiveTicketSession(Boolean(getTicketSession()));
+    };
+
+    updateSessionState();
+    const interval = window.setInterval(updateSessionState, 1000);
+    const handleStorage = () => updateSessionState();
+    window.addEventListener("storage", handleStorage);
+
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener("storage", handleStorage);
+    };
+  }, []);
+
+  const resolvedTabs = tabs.map((tab) =>
+    tab.label === "Camera"
+      ? {
+          ...tab,
+          href: hasActiveTicketSession ? "/model" : "/camera",
+          isActive: (currentPathname: string) =>
+            currentPathname === "/camera" ||
+            currentPathname.startsWith("/camera") ||
+            (hasActiveTicketSession &&
+              (currentPathname === "/model" ||
+                currentPathname.startsWith("/model"))),
+        }
+      : tab
+  );
+
+  // Hide nav on full-screen and auth pages
   if (
+    pathname === "/camera" ||
+    pathname.startsWith("/camera") ||
     pathname === "/signin" ||
     pathname.startsWith("/auth/")
   ) {
@@ -122,7 +157,7 @@ export default function BottomNav() {
   return (
     <nav className="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-[430px] bg-nav-bg/95 border-t border-gray-200 shadow-[0_-4px_12px_rgba(0,0,0,0.05)] safe-bottom z-50">
       <div className="flex items-center justify-around h-14 px-4">
-        {tabs.map((tab) => {
+        {resolvedTabs.map((tab) => {
           const isActive = tab.isActive
             ? tab.isActive(pathname)
             : tab.href === "/"
