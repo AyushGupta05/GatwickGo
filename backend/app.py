@@ -558,11 +558,11 @@ if __name__ == "__main__":
     print("=" * 60)
     print()
     print("Starting server...")
-    print("Open http://localhost:5000 in your browser")
+    print("Open http://localhost:5001 in your browser")
     print()
     print("Press Ctrl+C to stop the server")
     print()
     print("=" * 60)
 
     # Run Flask development server
-    app.run(debug=True, port=5000, host="127.0.0.1")
+    app.run(debug=True, port=5001, host="127.0.0.1")
