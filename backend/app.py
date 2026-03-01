@@ -8,6 +8,7 @@ and optional flight matching (sandbox replay or live provider).
 import base64
 import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 import pathlib
 from typing import Any, Dict, Optional
@@ -34,6 +35,11 @@ app = Flask(__name__, template_folder=os.path.join(os.path.dirname(__file__), "t
 
 # Path to the exported model UI (Next.js static build)
 MODEL_STATIC_DIR = Path(app.static_folder) / "model"
+GEMINI_CAPTURE_POINTS = 5
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _extract_bearer_token(auth_header: Optional[str]) -> Optional[str]:
@@ -57,25 +63,61 @@ def _jwt_subject(token: str) -> Optional[str]:
         return None
 
 
-def _compute_reward_points(result: Dict[str, Any], match: Optional[Dict[str, Any]]) -> int:
-    """
-    Simple heuristic: base points + small boost for confidence and successful match.
-    Actual totals are maintained by database triggers; this is just the ledger delta.
-    """
-    base_points = 10
-    try:
-        conf = float(result.get("confidence", 0) or 0)
-    except Exception:
-        conf = 0
-    base_points += int(round(conf * 5))
-    if match and match.get("best"):
-        base_points += 5
-    return base_points
+def _merge_unique_strings(existing: Any, new_value: Optional[str]) -> list[str]:
+    """Return a stable, de-duplicated string list."""
+    merged: list[str] = []
+    if isinstance(existing, list):
+        for item in existing:
+            if isinstance(item, str) and item and item not in merged:
+                merged.append(item)
+
+    if new_value and new_value not in {"", "UNKNOWN"} and new_value not in merged:
+        merged.append(new_value)
+
+    return merged
 
 
-def _persist_sighting_to_supabase(
+def _first_row(response: Any) -> Optional[Dict[str, Any]]:
+    data = getattr(response, "data", None)
+    if isinstance(data, list):
+        return data[0] if data else None
+    if isinstance(data, dict):
+        return data
+    return None
+
+
+def _best_flight_from_match(match: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    best = (match or {}).get("best") or {}
+    flight = best.get("flight") or {}
+    return flight if isinstance(flight, dict) else {}
+
+
+def _sync_profile_points(
     supabase_client,
-    user_id: Optional[str],
+    user_id: str,
+    points_total: int,
+) -> Optional[str]:
+    """Best-effort sync for legacy UI that still reads points from profiles."""
+    try:
+        profile_resp = (
+            supabase_client
+            .table("profiles")
+            .update({
+                "points": points_total,
+            })
+            .eq("id", user_id)
+            .execute()
+        )
+        if getattr(profile_resp, "error", None):
+            return str(profile_resp.error)
+    except Exception as exc:
+        return str(exc)
+    return None
+
+
+def _persist_capture_for_user(
+    supabase_client,
+    user_id: str,
     result: Dict[str, Any],
     match: Optional[Dict[str, Any]],
     feed: Optional[Dict[str, Any]],
@@ -88,9 +130,53 @@ def _persist_sighting_to_supabase(
     fallback_reason: Optional[str],
 ) -> Dict[str, Any]:
     """
-    Persist the classification pipeline outputs into Supabase tables.
+    Persist one capture, one reward ledger row, and update the user's summary stats.
     """
-    sighting_row: Dict[str, Any] = {
+    timestamp = _utc_now_iso()
+    best_flight = _best_flight_from_match(match)
+
+    captured_airline = result.get("airline")
+    if not isinstance(captured_airline, str) or not captured_airline or captured_airline == "UNKNOWN":
+        captured_airline = str(best_flight.get("airline") or "UNKNOWN")
+
+    captured_model = result.get("aircraft_family")
+    if not isinstance(captured_model, str) or not captured_model:
+        captured_model = str(best_flight.get("aircraft_family") or "UNKNOWN")
+
+    flight_number = best_flight.get("flight_number") or best_flight.get("callsign")
+
+    current_stats_resp = (
+        supabase_client
+        .table("user_stats")
+        .select("user_id, points_total, collected_families")
+        .eq("user_id", user_id)
+        .limit(1)
+        .execute()
+    )
+    if getattr(current_stats_resp, "error", None):
+        raise RuntimeError(current_stats_resp.error)
+
+    existing_row = _first_row(current_stats_resp)
+    next_points_total = (
+        int(existing_row.get("points_total") or 0) + GEMINI_CAPTURE_POINTS
+        if existing_row
+        else GEMINI_CAPTURE_POINTS
+    )
+    next_families = _merge_unique_strings(existing_row.get("collected_families") if existing_row else [], captured_model)
+
+    capture_payload: Dict[str, Any] = {
+        "user_id": user_id,
+        "airline": captured_airline,
+        "aircraft_family": captured_model,
+        "flight_number": flight_number,
+        "capture_points": GEMINI_CAPTURE_POINTS,
+        "confidence": result.get("confidence"),
+        "phase": result.get("phase"),
+        "phase_confidence": result.get("phase_confidence"),
+        "result": result,
+        "match": match,
+        "feed": feed,
+        "enrichment": enrichment,
         "observer_lat": observer[0],
         "observer_lon": observer[1],
         "radius_km": radius_km,
@@ -98,57 +184,81 @@ def _persist_sighting_to_supabase(
         "requested_mode": requested_mode,
         "effective_mode": effective_mode,
         "fallback_reason": fallback_reason,
-        "result": result,
-        "match": match,
-        "feed": feed,
-        "enrichment": enrichment,
+        "created_at": timestamp,
     }
-    if user_id:
-        sighting_row["user_id"] = user_id
+    capture_payload = {k: v for k, v in capture_payload.items() if v is not None}
+    capture_resp = (
+        supabase_client
+        .table("user_captures")
+        .insert(capture_payload)
+        .execute()
+    )
+    if getattr(capture_resp, "error", None):
+        raise RuntimeError(capture_resp.error)
+    capture_row = _first_row(capture_resp)
+    capture_id = capture_row.get("id") if capture_row else None
 
-    sighting_row = {k: v for k, v in sighting_row.items() if v is not None}
-
-    sighting_resp = supabase_client.table("sightings").insert(sighting_row).execute()
-    if getattr(sighting_resp, "error", None):
-        raise RuntimeError(sighting_resp.error)
-    sighting_data = getattr(sighting_resp, "data", None) or []
-    sighting_id = sighting_data[0].get("id") if sighting_data else None
-
-    classification_row: Dict[str, Any] = {
-        "sighting_id": sighting_id,
-        "airline": result.get("airline"),
-        "aircraft_family": result.get("aircraft_family"),
-        "confidence": result.get("confidence"),
-        "uncertainty": result.get("uncertainty"),
-        "votes": result.get("votes"),
-        "cues": result.get("cues"),
+    ledger_payload: Dict[str, Any] = {
+        "user_id": user_id,
+        "capture_id": capture_id,
+        "points": GEMINI_CAPTURE_POINTS,
+        "reason": "gemini_capture",
+        "created_at": timestamp,
     }
-    classification_row = {k: v for k, v in classification_row.items() if v is not None}
-    supabase_client.table("sighting_classifications").insert(classification_row).execute()
+    ledger_payload = {k: v for k, v in ledger_payload.items() if v is not None}
+    ledger_resp = (
+        supabase_client
+        .table("reward_ledger")
+        .insert(ledger_payload)
+        .execute()
+    )
+    if getattr(ledger_resp, "error", None):
+        raise RuntimeError(ledger_resp.error)
 
-    if match and match.get("best"):
-        match_row: Dict[str, Any] = {
-            "sighting_id": sighting_id,
-            "best": match.get("best"),
-            "candidates": match.get("candidates"),
-            "searched": match.get("searched"),
-            "mode": (feed or {}).get("effective_mode") or effective_mode,
-        }
-        match_row = {k: v for k, v in match_row.items() if v is not None}
-        supabase_client.table("sighting_matches").insert(match_row).execute()
+    if existing_row:
+        update_resp = (
+            supabase_client
+            .table("user_stats")
+            .update({
+                "points_total": next_points_total,
+                "collected_families": next_families,
+                "updated_at": _utc_now_iso(),
+            })
+            .eq("user_id", user_id)
+            .execute()
+        )
+        if getattr(update_resp, "error", None):
+            raise RuntimeError(update_resp.error)
+    else:
+        insert_resp = (
+            supabase_client
+            .table("user_stats")
+            .insert({
+                "user_id": user_id,
+                "points_total": next_points_total,
+                "collected_families": next_families,
+                "updated_at": _utc_now_iso(),
+            })
+            .execute()
+        )
+        if getattr(insert_resp, "error", None):
+            raise RuntimeError(insert_resp.error)
 
-    points_awarded = _compute_reward_points(result, match)
-    reward_row: Dict[str, Any] = {
-        "sighting_id": sighting_id,
-        "points": points_awarded,
-        "reason": "sighting_classified",
+    profile_sync_error = _sync_profile_points(
+        supabase_client=supabase_client,
+        user_id=user_id,
+        points_total=next_points_total,
+    )
+
+    return {
+        "capture_id": capture_id,
+        "captured_airline": captured_airline,
+        "captured_model": captured_model,
+        "points_awarded": GEMINI_CAPTURE_POINTS,
+        "points_total": next_points_total,
+        "collected_families": next_families,
+        "profile_sync_error": profile_sync_error,
     }
-    if user_id:
-        reward_row["user_id"] = user_id
-    reward_row = {k: v for k, v in reward_row.items() if v is not None}
-    supabase_client.table("reward_ledger").insert(reward_row).execute()
-
-    return {"sighting_id": sighting_id, "points_awarded": points_awarded}
 
 
 @app.route("/")
@@ -255,6 +365,8 @@ def classify_endpoint():
             return jsonify({"success": False, "error": f"Supabase configuration error: {exc}"}), 500
 
         user_id = _jwt_subject(token)
+        if not user_id:
+            return jsonify({"success": False, "error": "Invalid Supabase token"}), 401
 
         data = request.get_json()
         if not data or "images" not in data:
@@ -412,9 +524,8 @@ def classify_endpoint():
         except Exception as exc:
             response_payload["enrichment"] = {"origin": None, "fact": None, "error": str(exc)}
 
-        # Persist to Supabase (best-effort; classification response is still returned)
         try:
-            persist_info = _persist_sighting_to_supabase(
+            persist_info = _persist_capture_for_user(
                 supabase_client=supabase_client,
                 user_id=user_id,
                 result=result,
@@ -428,12 +539,20 @@ def classify_endpoint():
                 effective_mode=effective_mode,
                 fallback_reason=fallback_reason,
             )
-            if persist_info.get("sighting_id"):
-                response_payload["sighting_id"] = persist_info["sighting_id"]
+            if persist_info.get("capture_id"):
+                response_payload["capture_id"] = persist_info["capture_id"]
+            if persist_info.get("captured_airline"):
+                response_payload["captured_airline"] = persist_info["captured_airline"]
+            if persist_info.get("captured_model"):
+                response_payload["captured_model"] = persist_info["captured_model"]
             if persist_info.get("points_awarded") is not None:
                 response_payload["points_awarded"] = persist_info["points_awarded"]
+            if persist_info.get("points_total") is not None:
+                response_payload["points_total"] = persist_info["points_total"]
+            if persist_info.get("profile_sync_error"):
+                response_payload["profile_sync_error"] = persist_info["profile_sync_error"]
         except Exception as exc:
-            response_payload["storage_error"] = str(exc)
+            return jsonify({"success": False, "error": f"Failed to persist capture: {exc}"}), 500
 
         return jsonify(response_payload)
 
@@ -461,6 +580,80 @@ def fact_endpoint():
     if not fact:
         return jsonify({"success": False, "error": "No fact found"}), 404
     return jsonify({"success": True, "family": family, "fact": fact})
+
+
+@app.route("/api/user/progress", methods=["GET"])
+def user_progress_endpoint():
+    """Return persisted rewards summary and recent captures for the signed-in user."""
+    token = _extract_bearer_token(request.headers.get("Authorization"))
+    if not token:
+        return jsonify({"success": False, "error": "Authorization bearer token required"}), 401
+
+    try:
+        supabase_client = supabase_as_user(token)
+    except Exception as exc:
+        return jsonify({"success": False, "error": f"Supabase configuration error: {exc}"}), 500
+
+    user_id = _jwt_subject(token)
+    if not user_id:
+        return jsonify({"success": False, "error": "Invalid Supabase token"}), 401
+
+    try:
+        stats_resp = (
+            supabase_client
+            .table("user_stats")
+            .select("user_id, points_total, collected_families, updated_at")
+            .eq("user_id", user_id)
+            .limit(1)
+            .execute()
+        )
+        if getattr(stats_resp, "error", None):
+            raise RuntimeError(stats_resp.error)
+        stats_row = _first_row(stats_resp) or {
+            "user_id": user_id,
+            "points_total": 0,
+            "collected_families": [],
+            "updated_at": None,
+        }
+
+        captures_resp = (
+            supabase_client
+            .table("user_captures")
+            .select("id, airline, aircraft_family, flight_number, capture_points, confidence, phase, created_at")
+            .eq("user_id", user_id)
+            .limit(100)
+            .execute()
+        )
+        if getattr(captures_resp, "error", None):
+            raise RuntimeError(captures_resp.error)
+        captures = getattr(captures_resp, "data", None) or []
+        if not isinstance(captures, list):
+            captures = []
+        captures.sort(key=lambda row: str(row.get("created_at") or ""), reverse=True)
+
+        ledger_resp = (
+            supabase_client
+            .table("reward_ledger")
+            .select("id, points, reason, created_at, capture_id")
+            .eq("user_id", user_id)
+            .limit(100)
+            .execute()
+        )
+        if getattr(ledger_resp, "error", None):
+            raise RuntimeError(ledger_resp.error)
+        reward_ledger = getattr(ledger_resp, "data", None) or []
+        if not isinstance(reward_ledger, list):
+            reward_ledger = []
+        reward_ledger.sort(key=lambda row: str(row.get("created_at") or ""), reverse=True)
+
+        return jsonify({
+            "success": True,
+            "stats": stats_row,
+            "captures": captures,
+            "reward_ledger": reward_ledger,
+        })
+    except Exception as exc:
+        return jsonify({"success": False, "error": f"Failed to load user progress: {exc}"}), 500
 
 
 # ---------------------------------------------------------------------------

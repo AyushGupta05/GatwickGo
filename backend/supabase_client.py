@@ -56,24 +56,58 @@ def supabase_as_user(jwt: str) -> Client:
         "Accept": "application/json",
     }
 
-    class _Table:
+    class _Query:
         def __init__(self, name: str):
             self.name = name
+            self._method = "GET"
+            self._payload: Optional[Dict[str, Any]] = None
+            self._params: Dict[str, Any] = {}
+            self._headers: Dict[str, str] = {}
 
-        def insert(self, row: Dict[str, Any]) -> Any:
-            resp = requests.post(
+        def select(self, columns: str = "*") -> "_Query":
+            self._method = "GET"
+            self._params["select"] = columns
+            return self
+
+        def insert(self, row: Dict[str, Any]) -> "_Query":
+            self._method = "POST"
+            self._payload = row
+            # PostgREST expects return semantics via Prefer header, not a filter param.
+            self._headers["Prefer"] = "return=representation"
+            return self
+
+        def update(self, row: Dict[str, Any]) -> "_Query":
+            self._method = "PATCH"
+            self._payload = row
+            # PostgREST expects return semantics via Prefer header, not a filter param.
+            self._headers["Prefer"] = "return=representation"
+            return self
+
+        def eq(self, column: str, value: Any) -> "_Query":
+            self._params[column] = f"eq.{value}"
+            return self
+
+        def limit(self, count: int) -> "_Query":
+            self._params["limit"] = str(count)
+            return self
+
+        def execute(self) -> Any:
+            resp = requests.request(
+                self._method,
                 f"{rest_url}/{self.name}",
-                params={"return": "representation"},
-                headers=default_headers,
-                json=row,
+                params=self._params,
+                headers={**default_headers, **self._headers},
+                json=self._payload,
                 timeout=15,
             )
             if resp.ok:
+                if not resp.text:
+                    return SimpleNamespace(data=[], error=None)
                 return SimpleNamespace(data=resp.json(), error=None)
             return SimpleNamespace(data=None, error=resp.text)
 
     class _Client:
-        def table(self, name: str) -> _Table:
-            return _Table(name)
+        def table(self, name: str) -> _Query:
+            return _Query(name)
 
     return _Client()  # type: ignore

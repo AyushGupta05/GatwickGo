@@ -80,6 +80,19 @@ let supabaseClient = null;
 let authState = { session: null };
 let appInitialized = false;
 
+const AIRLINE_CARD_META = {
+    'British Airways': { id: 'ba', logo: '🇬🇧', color: '#2E3092', country: 'United Kingdom' },
+    'easyJet': { id: 'ej', logo: '🟠', color: '#FF6600', country: 'United Kingdom' },
+    'Wizz Air': { id: 'wz', logo: '💜', color: '#CE0E71', country: 'Hungary' },
+    'TUI Airways': { id: 'tom', logo: '🟦', color: '#00A0E1', country: 'United Kingdom' },
+    'Vueling': { id: 'vlg', logo: '🟡', color: '#FFC72C', country: 'Spain' },
+    'Emirates': { id: 'ek', logo: '✈️', color: '#D71A21', country: 'United Arab Emirates' },
+    'Qatar Airways': { id: 'qtr', logo: '🇶🇦', color: '#5C0D34', country: 'Qatar' },
+    'Turkish Airlines': { id: 'tk', logo: '🇹🇷', color: '#E31837', country: 'Turkey' },
+    'Norse Atlantic Airways': { id: 'n0', logo: '🛫', color: '#1C4FA1', country: 'Norway' },
+    'Delta Air Lines': { id: 'dal', logo: '🔺', color: '#C8102E', country: 'United States' },
+};
+
 // ============================================================================
 // AUTHENTICATION
 // ============================================================================
@@ -195,6 +208,79 @@ function onSessionReady(session) {
     if (!appInitialized) {
         appInitialized = true;
         init(); // start app setup once
+    }
+}
+
+function slugifyAirlineName(name) {
+    return String(name || 'unknown')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '') || 'unknown';
+}
+
+function getAirlineCardMeta(name) {
+    return AIRLINE_CARD_META[name] || {
+        id: slugifyAirlineName(name),
+        logo: '✈️',
+        color: '#003DA5',
+        country: 'Unknown',
+    };
+}
+
+function buildCachedCaptureCard(apiResult) {
+    const classification = apiResult?.result || {};
+    const airlineName = classification.airline || apiResult?.captured_airline;
+    const planeType = apiResult?.captured_model || classification.aircraft_family;
+
+    if (!airlineName || airlineName === 'UNKNOWN' || !planeType || planeType === 'UNKNOWN') {
+        return null;
+    }
+
+    const confidence = Number(classification.confidence || 0);
+    let rarity = 'common';
+    if (confidence >= 0.85) {
+        rarity = 'shiny';
+    } else if (confidence >= 0.65) {
+        rarity = 'rare';
+    }
+
+    const bestFlight = apiResult?.match?.best?.flight || {};
+    const meta = getAirlineCardMeta(airlineName);
+
+    return {
+        id: apiResult.capture_id ? `capture-${apiResult.capture_id}` : `capture-${Date.now()}`,
+        airline: {
+            id: meta.id,
+            name: airlineName,
+            logo: meta.logo,
+            color: meta.color,
+            country: meta.country,
+        },
+        planeType,
+        flightNumber: bestFlight.flight_number || bestFlight.callsign || 'UNKNOWN',
+        rarity,
+        capturedAt: new Date().toISOString(),
+    };
+}
+
+function syncLocalProgressCache(apiResult) {
+    if (typeof window === 'undefined' || !apiResult) return;
+
+    if (Number.isFinite(apiResult.points_total)) {
+        localStorage.setItem('gatwick-go-points', JSON.stringify(apiResult.points_total));
+    }
+
+    const card = buildCachedCaptureCard(apiResult);
+    if (!card) return;
+
+    try {
+        const raw = localStorage.getItem('gatwick-go-collection');
+        const current = raw ? JSON.parse(raw) : [];
+        const collection = Array.isArray(current) ? current.filter((entry) => entry?.id !== card.id) : [];
+        collection.unshift(card);
+        localStorage.setItem('gatwick-go-collection', JSON.stringify(collection));
+    } catch (err) {
+        console.warn('Failed to sync local collection cache', err);
     }
 }
 
@@ -342,13 +428,17 @@ async function classifyFrames(frames) {
             throw new Error(result.error || 'Unknown error');
         }
 
+        syncLocalProgressCache(result);
         state.lastClassification = result.result;
         displayResults(result.result, result.frames_processed);
         displayMatch(result.match, result.feed, result.result, result.enrichment);
         displayFact(result.enrichment);
         updatePreviewFromResult(result.result);
+        const rewardSuffix = Number.isFinite(result.points_awarded)
+            ? ` and +${result.points_awarded} points saved`
+            : '';
         showStatus(
-            `Classification successful (${result.frames_processed} frames processed)`,
+            `Classification successful (${result.frames_processed} frames processed${rewardSuffix})`,
             'success'
         );
     } catch (error) {
