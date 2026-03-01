@@ -1,9 +1,46 @@
 "use client";
 
+import type { ReactNode } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
-const tabs = [
+type Tab = {
+  label: string;
+  href: string;
+  icon: (active: boolean) => ReactNode;
+  isCenter?: boolean;
+  external?: boolean;
+  isActive?: (pathname: string) => boolean;
+};
+
+const tabs: Tab[] = [
+  {
+    label: "Camera",
+    href: "/camera",
+    isActive: (pathname: string) =>
+      pathname === "/camera" ||
+      pathname.startsWith("/camera") ||
+      pathname === "/model/camera",
+    icon: (active: boolean) => (
+      <svg
+        width="24"
+        height="24"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke={active ? "#003DA5" : "#9CA3AF"}
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        <circle cx="12" cy="12" r="8" />
+        <circle cx="12" cy="12" r="2" />
+        <line x1="12" y1="4" x2="12" y2="7" />
+        <line x1="12" y1="17" x2="12" y2="20" />
+        <line x1="4" y1="12" x2="7" y2="12" />
+        <line x1="17" y1="12" x2="20" y2="12" />
+      </svg>
+    ),
+  },
   {
     label: "Collection",
     href: "/collection",
@@ -29,27 +66,21 @@ const tabs = [
     label: "Home",
     href: "/",
     icon: (active: boolean) => (
-      <div
-        className={`w-14 h-14 rounded-full flex items-center justify-center -mt-6 shadow-lg ${
-          active ? "bg-gatwick-blue" : "bg-gatwick-dark"
-        }`}
+      <svg
+        width="26"
+        height="26"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke={active ? "#003DA5" : "#9CA3AF"}
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
       >
-        <svg
-          width="28"
-          height="28"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="white"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        >
-          <path d="M22 2L11 13" />
-          <path d="M22 2L15 22L11 13L2 9L22 2Z" />
-        </svg>
-      </div>
+        <path d="M3 12L12 3l9 9" />
+        <path d="M5 10v10h14V10" />
+        <path d="M9 21V12h6v9" />
+      </svg>
     ),
-    isCenter: true,
   },
   {
     label: "Shop",
@@ -76,10 +107,8 @@ const tabs = [
 export default function BottomNav() {
   const pathname = usePathname();
 
-  // Hide nav on full-screen camera page and auth pages
+  // Hide nav on auth pages only
   if (
-    pathname === "/camera" ||
-    pathname.startsWith("/camera/") ||
     pathname === "/signin" ||
     pathname.startsWith("/auth/")
   ) {
@@ -88,33 +117,38 @@ export default function BottomNav() {
 
   return (
     <nav className="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-[430px] bg-nav-bg border-t border-gray-200 safe-bottom z-50">
-      <div className="flex items-center justify-around h-16">
+      <div className="flex items-center justify-around h-16 px-2">
         {tabs.map((tab) => {
-          const isActive =
-            tab.href === "/"
-              ? pathname === "/"
-              : pathname.startsWith(tab.href);
+          const isActive = tab.isActive
+            ? tab.isActive(pathname)
+            : tab.href === "/"
+            ? pathname === "/"
+            : pathname.startsWith(tab.href);
+
+          const linkClasses =
+            "flex flex-col items-center justify-center min-w-[64px] min-h-[44px] gap-1";
+
+          const labelClasses = `text-[10px] font-medium ${
+            isActive ? "text-gatwick-blue" : "text-gray-400"
+          }`;
+
+          if (tab.external) {
+            return (
+              <a
+                key={tab.label}
+                href={tab.href}
+                className={linkClasses}
+              >
+                {tab.icon(isActive)}
+                <span className={labelClasses}>{tab.label}</span>
+              </a>
+            );
+          }
 
           return (
-            <Link
-              key={tab.href}
-              href={tab.href}
-              className={`flex flex-col items-center justify-center min-w-[64px] min-h-[44px] ${
-                tab.isCenter ? "" : "gap-1"
-              }`}
-            >
+            <Link key={tab.href} href={tab.href} className={linkClasses}>
               {tab.icon(isActive)}
-              <span
-                className={`text-[10px] font-medium ${
-                  tab.isCenter
-                    ? "mt-1"
-                    : isActive
-                    ? "text-gatwick-blue"
-                    : "text-gray-400"
-                }`}
-              >
-                {tab.label}
-              </span>
+              <span className={labelClasses}>{tab.label}</span>
             </Link>
           );
         })}

@@ -63,6 +63,141 @@ const elements = {
     modalFrames: document.getElementById('modalFrames'),
 };
 
+// Auth / layout elements
+const authElements = {
+    screen: document.getElementById('auth-screen'),
+    email: document.getElementById('auth-email'),
+    password: document.getElementById('auth-password'),
+    loginBtn: document.getElementById('auth-login-btn'),
+    signupBtn: document.getElementById('auth-signup-btn'),
+    error: document.getElementById('auth-error'),
+    signoutBtn: document.getElementById('signout-btn'),
+    userChip: document.getElementById('user-chip'),
+    appShell: document.getElementById('app-shell'),
+};
+
+let supabaseClient = null;
+let authState = { session: null };
+let appInitialized = false;
+
+// ============================================================================
+// AUTHENTICATION
+// ============================================================================
+
+function ensureSupabase() {
+    if (!window.supabase || !window.SUPABASE_URL || !window.SUPABASE_ANON_KEY) {
+        console.warn('Supabase env missing');
+        return false;
+    }
+    if (!supabaseClient) {
+        supabaseClient = window.supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
+    }
+    return true;
+}
+
+function showAuth(message) {
+    if (authElements.error) {
+        authElements.error.textContent = message || '';
+        authElements.error.classList.toggle('hidden', !message);
+    }
+    authElements.screen.classList.remove('hidden');
+    authElements.appShell.classList.add('hidden');
+}
+
+function hideAuth() {
+    authElements.screen.classList.add('hidden');
+    authElements.appShell.classList.remove('hidden');
+}
+
+function setUserChip(email) {
+    if (!authElements.userChip) return;
+    if (email) {
+        authElements.userChip.textContent = email;
+        authElements.userChip.classList.remove('hidden');
+    } else {
+        authElements.userChip.classList.add('hidden');
+    }
+}
+
+async function handleLogin(isSignup = false) {
+    if (!ensureSupabase()) {
+        showAuth('Supabase configuration missing.');
+        return;
+    }
+    const email = (authElements.email?.value || '').trim();
+    const password = authElements.password?.value || '';
+    if (!email || !password) {
+        showAuth('Enter email and password.');
+        return;
+    }
+    const btn = isSignup ? authElements.signupBtn : authElements.loginBtn;
+    btn.disabled = true;
+    showAuth('');
+    try {
+        if (isSignup) {
+            const { error } = await supabaseClient.auth.signUp({ email, password });
+            if (error) throw error;
+        }
+        const { data, error } = await supabaseClient.auth.signInWithPassword({ email, password });
+        if (error) throw error;
+        authState.session = data.session;
+        onSessionReady(data.session);
+    } catch (err) {
+        console.error(err);
+        showAuth(err.message || 'Authentication failed.');
+    } finally {
+        btn.disabled = false;
+    }
+}
+
+async function handleSignout() {
+    if (supabaseClient) {
+        await supabaseClient.auth.signOut();
+    }
+    authState.session = null;
+    setUserChip(null);
+    showAuth();
+}
+
+function bindAuthHandlers() {
+    authElements.loginBtn?.addEventListener('click', () => handleLogin(false));
+    authElements.signupBtn?.addEventListener('click', () => handleLogin(true));
+    authElements.signoutBtn?.addEventListener('click', handleSignout);
+}
+
+async function restoreSession() {
+    if (!ensureSupabase()) {
+        showAuth('Supabase configuration missing.');
+        return;
+    }
+    const { data } = await supabaseClient.auth.getSession();
+    if (data?.session) {
+        authState.session = data.session;
+        onSessionReady(data.session);
+    } else {
+        showAuth();
+    }
+    supabaseClient.auth.onAuthStateChange((_event, session) => {
+        if (session) {
+            authState.session = session;
+            onSessionReady(session);
+        } else {
+            authState.session = null;
+            setUserChip(null);
+            showAuth();
+        }
+    });
+}
+
+function onSessionReady(session) {
+    hideAuth();
+    setUserChip(session?.user?.email || 'Signed in');
+    if (!appInitialized) {
+        appInitialized = true;
+        init(); // start app setup once
+    }
+}
+
 // ============================================================================
 // WEBCAM INITIALIZATION
 // ============================================================================
@@ -169,11 +304,30 @@ async function classifyFrames(frames) {
             };
         }
 
+        // Attempt to include Supabase session JWT so backend RLS works
+        let authToken = null;
+        try {
+            for (let i = 0; i < localStorage.length; i++) {
+                const key = localStorage.key(i);
+                if (key && key.startsWith('sb-') && key.endsWith('-auth-token')) {
+                    const raw = localStorage.getItem(key);
+                    const parsed = raw ? JSON.parse(raw) : null;
+                    authToken = parsed?.access_token || parsed?.currentSession?.access_token || null;
+                    if (authToken) break;
+                }
+            }
+        } catch (err) {
+            console.warn('Could not read Supabase token from localStorage', err);
+        }
+
+        const headers = { 'Content-Type': 'application/json' };
+        if (authToken) {
+            headers['Authorization'] = `Bearer ${authToken}`;
+        }
+
         const response = await fetch('/api/classify', {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
+            headers,
             body: JSON.stringify(body),
         });
 
@@ -582,6 +736,10 @@ function ensureDefaultLocation() {
  * Handle capture button click
  */
 async function handleCapture() {
+    if (!authState.session) {
+        showStatus('Please sign in first.', 'error');
+        return;
+    }
     if (state.isCapturing) return;
     
     state.isCapturing = true;
@@ -668,4 +826,15 @@ async function init() {
     }
 }
 
-document.addEventListener('DOMContentLoaded', init);
+async function boot() {
+    bindAuthHandlers();
+    if (!ensureSupabase()) {
+        showAuth('Supabase configuration missing.');
+        return;
+    }
+    // Keep capture disabled until session arrives
+    elements.captureBtn.disabled = true;
+    await restoreSession();
+}
+
+document.addEventListener('DOMContentLoaded', boot);

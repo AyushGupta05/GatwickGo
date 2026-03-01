@@ -6,9 +6,11 @@ and optional flight matching (sandbox replay or live provider).
 """
 
 import base64
+import json
 import os
 from pathlib import Path
 import pathlib
+from typing import Any, Dict, Optional
 
 from flask import Flask, render_template, request, jsonify, send_from_directory
 
@@ -20,6 +22,7 @@ import config
 from flight_feed import get_flight_provider, haversine_km
 from flight_matcher import match_best_flight
 from enrichment import enrich_match, get_fact_for_family
+from supabase_client import supabase_as_user
 
 # Optional: modern google.genai client for dev image generation
 try:
@@ -33,6 +36,121 @@ app = Flask(__name__, template_folder=os.path.join(os.path.dirname(__file__), "t
 MODEL_STATIC_DIR = Path(app.static_folder) / "model"
 
 
+def _extract_bearer_token(auth_header: Optional[str]) -> Optional[str]:
+    """Parse a Bearer token from Authorization header."""
+    if not auth_header:
+        return None
+    parts = auth_header.strip().split()
+    if len(parts) == 2 and parts[0].lower() == "bearer":
+        return parts[1]
+    return None
+
+
+def _jwt_subject(token: str) -> Optional[str]:
+    """Return the user id (sub) from a Supabase JWT without verifying signature."""
+    try:
+        payload_segment = token.split(".")[1]
+        padded = payload_segment + "=" * (-len(payload_segment) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode("utf-8")).decode("utf-8"))
+        return payload.get("sub") or payload.get("user_id") or payload.get("id")
+    except Exception:
+        return None
+
+
+def _compute_reward_points(result: Dict[str, Any], match: Optional[Dict[str, Any]]) -> int:
+    """
+    Simple heuristic: base points + small boost for confidence and successful match.
+    Actual totals are maintained by database triggers; this is just the ledger delta.
+    """
+    base_points = 10
+    try:
+        conf = float(result.get("confidence", 0) or 0)
+    except Exception:
+        conf = 0
+    base_points += int(round(conf * 5))
+    if match and match.get("best"):
+        base_points += 5
+    return base_points
+
+
+def _persist_sighting_to_supabase(
+    supabase_client,
+    user_id: Optional[str],
+    result: Dict[str, Any],
+    match: Optional[Dict[str, Any]],
+    feed: Optional[Dict[str, Any]],
+    enrichment: Optional[Dict[str, Any]],
+    observer: tuple[float, float],
+    radius_km: float,
+    frames_processed: int,
+    requested_mode: str,
+    effective_mode: str,
+    fallback_reason: Optional[str],
+) -> Dict[str, Any]:
+    """
+    Persist the classification pipeline outputs into Supabase tables.
+    """
+    sighting_row: Dict[str, Any] = {
+        "observer_lat": observer[0],
+        "observer_lon": observer[1],
+        "radius_km": radius_km,
+        "frames_processed": frames_processed,
+        "requested_mode": requested_mode,
+        "effective_mode": effective_mode,
+        "fallback_reason": fallback_reason,
+        "result": result,
+        "match": match,
+        "feed": feed,
+        "enrichment": enrichment,
+    }
+    if user_id:
+        sighting_row["user_id"] = user_id
+
+    sighting_row = {k: v for k, v in sighting_row.items() if v is not None}
+
+    sighting_resp = supabase_client.table("sightings").insert(sighting_row).execute()
+    if getattr(sighting_resp, "error", None):
+        raise RuntimeError(sighting_resp.error)
+    sighting_data = getattr(sighting_resp, "data", None) or []
+    sighting_id = sighting_data[0].get("id") if sighting_data else None
+
+    classification_row: Dict[str, Any] = {
+        "sighting_id": sighting_id,
+        "airline": result.get("airline"),
+        "aircraft_family": result.get("aircraft_family"),
+        "confidence": result.get("confidence"),
+        "uncertainty": result.get("uncertainty"),
+        "votes": result.get("votes"),
+        "cues": result.get("cues"),
+    }
+    classification_row = {k: v for k, v in classification_row.items() if v is not None}
+    supabase_client.table("sighting_classifications").insert(classification_row).execute()
+
+    if match and match.get("best"):
+        match_row: Dict[str, Any] = {
+            "sighting_id": sighting_id,
+            "best": match.get("best"),
+            "candidates": match.get("candidates"),
+            "searched": match.get("searched"),
+            "mode": (feed or {}).get("effective_mode") or effective_mode,
+        }
+        match_row = {k: v for k, v in match_row.items() if v is not None}
+        supabase_client.table("sighting_matches").insert(match_row).execute()
+
+    points_awarded = _compute_reward_points(result, match)
+    reward_row: Dict[str, Any] = {
+        "sighting_id": sighting_id,
+        "points": points_awarded,
+        "reason": "sighting_classified",
+    }
+    if user_id:
+        reward_row["user_id"] = user_id
+    reward_row = {k: v for k, v in reward_row.items() if v is not None}
+    supabase_client.table("reward_ledger").insert(reward_row).execute()
+
+    return {"sighting_id": sighting_id, "points_awarded": points_awarded}
+
+
 @app.route("/")
 def index():
     """Serve the main page with webcam interface."""
@@ -41,6 +159,8 @@ def index():
         default_observer_lat=config.AIRPORT_COORDS[0],
         default_observer_lon=config.AIRPORT_COORDS[1],
         default_radius_km=config.DEFAULT_SEARCH_RADIUS_KM,
+        supabase_url=os.getenv("SUPABASE_URL"),
+        supabase_anon_key=os.getenv("SUPABASE_ANON_KEY"),
     )
 
 
@@ -117,6 +237,17 @@ def classify_endpoint():
     }
     """
     try:
+        token = _extract_bearer_token(request.headers.get("Authorization"))
+        if not token:
+            return jsonify({"success": False, "error": "Authorization bearer token required"}), 401
+
+        try:
+            supabase_client = supabase_as_user(token)
+        except Exception as exc:
+            return jsonify({"success": False, "error": f"Supabase configuration error: {exc}"}), 500
+
+        user_id = _jwt_subject(token)
+
         data = request.get_json()
         if not data or "images" not in data:
             return jsonify({"success": False, "error": "No images provided"}), 400
@@ -272,6 +403,29 @@ def classify_endpoint():
             response_payload["enrichment"] = enrich_match(result, response_payload.get("match"), response_payload.get("feed"))
         except Exception as exc:
             response_payload["enrichment"] = {"origin": None, "fact": None, "error": str(exc)}
+
+        # Persist to Supabase (best-effort; classification response is still returned)
+        try:
+            persist_info = _persist_sighting_to_supabase(
+                supabase_client=supabase_client,
+                user_id=user_id,
+                result=result,
+                match=response_payload.get("match"),
+                feed=response_payload.get("feed"),
+                enrichment=response_payload.get("enrichment"),
+                observer=observer,
+                radius_km=radius_km,
+                frames_processed=len(image_bytes_list),
+                requested_mode=requested_mode,
+                effective_mode=effective_mode,
+                fallback_reason=fallback_reason,
+            )
+            if persist_info.get("sighting_id"):
+                response_payload["sighting_id"] = persist_info["sighting_id"]
+            if persist_info.get("points_awarded") is not None:
+                response_payload["points_awarded"] = persist_info["points_awarded"]
+        except Exception as exc:
+            response_payload["storage_error"] = str(exc)
 
         return jsonify(response_payload)
 
