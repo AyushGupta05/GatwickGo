@@ -1,7 +1,6 @@
 /**
  * Aircraft Detection Web App - Frontend JavaScript
- * 
- * Handles:
+ * * Handles:
  * - Webcam access and video stream
  * - Frame capture from canvas
  * - Burst capture simulation (multiple frames)
@@ -34,14 +33,29 @@ const elements = {
     captureBtn: document.getElementById('capture-btn'),
     clearBtn: document.getElementById('clear-btn'),
     fileInput: document.getElementById('file-input'),
-    resultBox: document.getElementById('result-box'),
     statusMessage: document.getElementById('status-message'),
     frameCounter: document.getElementById('frame-counter'),
     locBtn: document.getElementById('loc-btn'),
     locStatus: document.getElementById('loc-status'),
     modeLive: document.getElementById('mode-live'),
     modeSandbox: document.getElementById('mode-sandbox'),
-    matchBox: document.getElementById('match-box'),
+    
+    // New UI Elements
+    loadingOverlay: document.getElementById('loading-overlay'),
+    resultsSection: document.getElementById('results-section'),
+    resAirline: document.getElementById('resAirline'),
+    resFamily: document.getElementById('resFamily'),
+    resFlightMatch: document.getElementById('resFlightMatch'),
+    
+    // Modal UI Elements
+    modalConfidence: document.getElementById('modalConfidence'),
+    barConfidence: document.getElementById('barConfidence'),
+    modalPhase: document.getElementById('modalPhase'),
+    modalPhaseConf: document.getElementById('modalPhaseConf'),
+    barPhaseConf: document.getElementById('barPhaseConf'),
+    modalCues: document.getElementById('modalCues'),
+    modalFeedData: document.getElementById('modalFeedData'),
+    modalFrames: document.getElementById('modalFrames'),
 };
 
 // ============================================================================
@@ -170,7 +184,7 @@ async function classifyFrames(frames) {
 
         state.lastClassification = result.result;
         displayResults(result.result, result.frames_processed);
-        displayMatch(result.match, result.feed);
+        displayMatch(result.match, result.feed, result.result);
         showStatus(
             `Classification successful (${result.frames_processed} frames processed)`,
             'success'
@@ -190,118 +204,110 @@ async function classifyFrames(frames) {
  * Display classification results
  */
 function displayResults(result, framesProcessed) {
-    const resultBox = elements.resultBox;
+    elements.resultsSection.classList.remove('hidden');
     
-    const confidencePercent = Math.round(result.confidence * 100);
-    const phase = result.phase || 'unknown';
-    const phaseConf = Math.round((result.phase_confidence || 0) * 100);
-    const cuesHtml = result.cues && result.cues.length > 0
-        ? `<ul class="cues-list">${result.cues.map((cue) => `<li>${cue}</li>`).join('')}</ul>`
-        : '<p style="color: #999; font-size: 13px;">No visual cues extracted</p>';
+    // 1. Primary Data (UI View)
+    const confidencePercent = Math.round((result.confidence || 0) * 100);
+    const confMeta = getConfidenceMeta(confidencePercent);
 
-    resultBox.innerHTML = `
-        <div class="result-content">
-            <div class="result-item">
-                <div class="result-label">🚁 Airline</div>
-                <div class="result-value">${escapeHtml(result.airline)}</div>
-            </div>
-            
-            <div class="result-item">
-                <div class="result-label">✈️ Aircraft Family</div>
-                <div class="result-value">${escapeHtml(result.aircraft_family)}</div>
-            </div>
-            
-            <div class="result-item">
-                <div class="result-label">🎯 Confidence</div>
-                <div class="result-value">${confidencePercent}%</div>
-                <div class="confidence-bar">
-                    <div class="confidence-fill" style="width: ${result.confidence * 100}%"></div>
-                </div>
-            </div>
-
-            <div class="result-item">
-                <div class="result-label">🛫/🛬 Phase</div>
-                <div class="result-value">${phase}</div>
-                <div class="result-subtext">Confidence: ${phaseConf}%</div>
-            </div>
-            
-            <div class="result-item">
-                <div class="result-label">💡 Visual Cues</div>
-                ${cuesHtml}
-            </div>
-            
-            <div class="frame-display">
-                📷 Processed from ${framesProcessed} frame(s)
-            </div>
-        </div>
+    elements.resAirline.innerHTML = `
+        ${escapeHtml(result.airline || "Unknown Airline")}
+        <span class="ml-2 text-[10px] font-semibold px-2 py-0.5 rounded-full inline-flex items-center ${confMeta.pill}">
+            ${confMeta.level} ${confidencePercent}%
+        </span>
     `;
-    
-    resultBox.classList.remove('empty-state', 'loading');
+    elements.resFamily.innerHTML = `<i class="fa-solid fa-plane-up mr-2 text-xs"></i> ${result.aircraft_family || "Unknown Aircraft"}`;
+
+    // 2. Modal Data (Advanced Info)
+    elements.modalConfidence.innerText = `${confidencePercent}% (${confMeta.level})`;
+    elements.barConfidence.style.width = `${confidencePercent}%`;
+    elements.barConfidence.className = `h-2 rounded-full transition-all duration-500 ${confMeta.bar}`;
+
+    const phase = result.phase || 'Unknown';
+    const phaseConf = Math.round((result.phase_confidence || 0) * 100);
+    elements.modalPhase.innerText = phase;
+    elements.modalPhaseConf.innerText = `${phaseConf}%`;
+    elements.barPhaseConf.style.width = `${phaseConf}%`;
+
+    // Populate Cues
+    if (result.cues && result.cues.length > 0) {
+        elements.modalCues.innerHTML = result.cues.map(cue => 
+            `<li class="border-b border-slate-200/60 pb-2 last:border-0 last:pb-0"><span class="text-gatwick-blue font-bold mr-2">→</span>${escapeHtml(cue)}</li>`
+        ).join('');
+    } else {
+        elements.modalCues.innerHTML = '<li class="text-slate-500 italic">No visual cues extracted</li>';
+    }
+
+    elements.modalFrames.innerText = framesProcessed;
 }
 
 /**
  * Display provider + match info
  */
-function displayMatch(match, feed) {
-    const box = elements.matchBox;
-    if (!box) return;
+function displayMatch(match, feed, classification = null) {
+    const detectedAirline = (classification?.airline && classification.airline !== 'UNKNOWN') ? classification.airline : null;
+    const detectionPercent = Math.round(((classification?.confidence) || 0) * 100);
+    const detectionMeta = getConfidenceMeta(detectionPercent);
 
     if (!match || !match.best) {
-        box.innerHTML = `<p style="color:#666;">No match yet.</p>`;
-        box.classList.remove('loading');
-        return;
+        const fallbackText = detectedAirline
+            ? `Gemini: ${escapeHtml(detectedAirline)} (${detectionMeta.level} ${detectionPercent}%)`
+            : 'No matching flights found nearby.';
+        elements.resFlightMatch.innerHTML = `<span class="text-slate-500 font-normal">${fallbackText}</span>`;
+    } else {
+        const best = match.best.flight || {};
+        const score = Math.round((match.best.score || 0) * 100);
+        const altitudeRaw = best.baro_altitude ?? best.alt_ft;
+        const altitude = altitudeRaw ? Math.round(altitudeRaw) + (best.baro_altitude ? 'm' : 'ft') : 'N/A';
+        const airlineLabel = best.airline || detectedAirline || 'Unknown';
+        
+        let subtitle = `
+            ${escapeHtml(airlineLabel)} • Match Score: ${score}% • Alt: ${altitude}
+        `;
+        if (detectedAirline) {
+            subtitle += `<br><span class="text-[10px] font-semibold px-2 py-0.5 rounded-full inline-flex items-center ${detectionMeta.pill}">
+                Gemini: ${escapeHtml(detectedAirline)} (${detectionMeta.level} ${detectionPercent}%)
+            </span>`;
+        } else if (classification) {
+            subtitle += `<br><span class="text-[10px] text-slate-500">Gemini confidence ${detectionPercent}% (${detectionMeta.level})</span>`;
+        }
+
+        elements.resFlightMatch.innerHTML = `
+            Flight <span class="text-gatwick-blue">${escapeHtml(best.flight_number || best.callsign || 'N/A')}</span>
+            <br>
+            <span class="text-[11px] font-normal text-slate-500 mt-0.5 block">
+                ${subtitle}
+            </span>
+        `;
     }
 
-    const best = match.best.flight || {};
-    const score = match.best.score || 0;
+    // Modal Feed Data Population
     const provider = feed?.provider || 'unknown';
-    const flightCount = feed?.flight_count ?? '—';
+    const flightCount = feed?.flight_count ?? '0';
     const observer = feed?.observer || null;
 
-    box.innerHTML = `
-        <div class="result-content">
-            <div class="result-item">
-                <div class="result-label">Feed</div>
-                <div class="result-value">${provider} ${feed?.mode ? '(' + feed.mode + ')' : ''}</div>
-                <div class="result-subtext">Flights fetched: ${flightCount}</div>
-            </div>
-            <div class="result-item">
-                <div class="result-label">Best Match</div>
-                <div class="result-value">${best.flight_number || 'N/A'} — ${best.airline || ''}</div>
-                <div class="result-subtext">
-                    Family: ${best.aircraft_family || 'unknown'} · Score: ${(score * 100).toFixed(1)}%
-                </div>
-            </div>
-            ${observer ? `
-            <div class="result-item">
-                <div class="result-label">Observer</div>
-                <div class="result-value">${observer.lat.toFixed(3)}, ${observer.lon.toFixed(3)}</div>
-                <div class="result-subtext">radius ${observer.radius_km || '—'} km</div>
-            </div>` : ''}
-        </div>
+    elements.modalFeedData.innerHTML = `
+        <div class="mb-1"><span class="text-slate-400">Provider:</span> ${escapeHtml(provider)} ${feed?.mode ? '(' + escapeHtml(feed.mode) + ')' : ''}</div>
+        <div class="mb-1"><span class="text-slate-400">Flights Fetched:</span> ${flightCount}</div>
+        ${observer ? `<div><span class="text-slate-400">Observer Data:</span> ${observer.lat.toFixed(4)}, ${observer.lon.toFixed(4)} (Radius: ${observer.radius_km || '—'}km)</div>` : ''}
     `;
-    box.classList.remove('empty-state', 'loading');
 }
 
 /**
- * Display error in results box
+ * Display error in results section
  */
 function displayError(errorMessage) {
-    const resultBox = elements.resultBox;
-    resultBox.innerHTML = `
-        <div class="empty-state">
-            <p style="color: #d32f2f; font-weight: 600; margin-bottom: 8px;">⚠️ Error</p>
-            <p>${escapeHtml(errorMessage)}</p>
-        </div>
-    `;
-    resultBox.classList.remove('loading');
+    elements.resultsSection.classList.remove('hidden');
+    elements.resAirline.innerText = "Error";
+    elements.resFamily.innerHTML = `<i class="fa-solid fa-triangle-exclamation mr-2 text-xs"></i> ${escapeHtml(errorMessage)}`;
+    elements.resFlightMatch.innerHTML = `<span class="text-gatwick-red font-normal">Classification failed.</span>`;
 }
 
 /**
  * Update frame counter display
  */
 function updateFrameCounter(current, total) {
-    elements.frameCounter.textContent = `Capturing frame ${current}/${total}...`;
+    elements.frameCounter.textContent = `Processing frame ${current}/${total}...`;
 }
 
 /**
@@ -318,13 +324,9 @@ async function handleFileUpload(event) {
     const file = event.target.files && event.target.files[0];
     if (!file) return;
 
-    elements.resultBox.innerHTML = `
-        <div>
-            <div class="spinner"></div>
-            <p>Uploading and classifying...</p>
-        </div>
-    `;
-    elements.resultBox.classList.add('loading');
+    elements.resultsSection.classList.add('hidden');
+    elements.loadingOverlay.classList.remove('hidden');
+    elements.loadingOverlay.classList.add('flex');
     showStatus(`Classifying ${file.name}...`, 'info');
 
     try {
@@ -336,6 +338,8 @@ async function handleFileUpload(event) {
         displayError(error.message);
     } finally {
         elements.fileInput.value = '';
+        elements.loadingOverlay.classList.add('hidden');
+        elements.loadingOverlay.classList.remove('flex');
     }
 }
 
@@ -349,18 +353,37 @@ function readFileAsDataURL(file) {
 }
 
 /**
- * Show status message
+ * Show status message (Toast UI update)
  */
 function showStatus(message, type = 'info') {
     const msg = elements.statusMessage;
     msg.textContent = message;
-    msg.className = `status-message show ${type}`;
     
-    // Auto-clear after 5 seconds if not error
+    // Reset classes
+    msg.className = 'absolute top-20 left-4 right-4 z-50 text-center py-2 px-4 rounded-lg text-sm font-semibold shadow-md toast-enter';
+    
+    if (type === 'error') {
+        msg.classList.add('bg-red-100', 'text-red-800', 'border', 'border-red-200');
+    } else if (type === 'success') {
+        msg.classList.add('bg-green-100', 'text-green-800', 'border', 'border-green-200');
+    } else {
+        msg.classList.add('bg-blue-100', 'text-blue-800', 'border', 'border-blue-200');
+    }
+
+    // Trigger animation
+    msg.classList.remove('hidden');
+    setTimeout(() => {
+        msg.classList.remove('toast-enter');
+        msg.classList.add('toast-active');
+    }, 10);
+    
+    // Auto-clear
     if (type !== 'error') {
         setTimeout(() => {
-            msg.classList.remove('show');
-        }, 5000);
+            msg.classList.remove('toast-active');
+            msg.classList.add('toast-enter');
+            setTimeout(() => msg.classList.add('hidden'), 300);
+        }, 4000);
     }
 }
 
@@ -368,9 +391,23 @@ function showStatus(message, type = 'info') {
  * Escape HTML to prevent XSS
  */
 function escapeHtml(text) {
+    if (!text) return '';
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
+}
+
+/**
+ * Map a 0-100 confidence score to UI styles and labels.
+ */
+function getConfidenceMeta(percent) {
+    if (percent >= 75) {
+        return { level: 'High', pill: 'bg-green-100 text-green-800', bar: 'bg-green-500' };
+    }
+    if (percent >= 50) {
+        return { level: 'Medium', pill: 'bg-amber-100 text-amber-800', bar: 'bg-amber-500' };
+    }
+    return { level: 'Low', pill: 'bg-red-100 text-red-800', bar: 'bg-red-500' };
 }
 
 // ============================================================================
@@ -379,8 +416,15 @@ function escapeHtml(text) {
 
 function setMode(mode) {
     state.mode = mode;
-    elements.modeLive.classList.toggle('active', mode === 'OPENSKY');
-    elements.modeSandbox.classList.toggle('active', mode === 'SANDBOX');
+    
+    if (mode === 'OPENSKY') {
+        elements.modeLive.className = 'flex-1 py-1.5 text-sm font-semibold rounded-md bg-white shadow-sm text-gatwick-blue transition-all';
+        elements.modeSandbox.className = 'flex-1 py-1.5 text-sm font-medium rounded-md text-slate-500 hover:text-slate-700 transition-all bg-transparent';
+    } else {
+        elements.modeSandbox.className = 'flex-1 py-1.5 text-sm font-semibold rounded-md bg-white shadow-sm text-gatwick-blue transition-all';
+        elements.modeLive.className = 'flex-1 py-1.5 text-sm font-medium rounded-md text-slate-500 hover:text-slate-700 transition-all bg-transparent';
+    }
+    
     showStatus(`Mode set to ${mode === 'OPENSKY' ? 'Live (OpenSky)' : 'Sandbox replay'}`, 'info');
 }
 
@@ -398,8 +442,9 @@ function useGeolocation() {
         (pos) => {
             const { latitude, longitude } = pos.coords;
             state.location = { lat: latitude, lon: longitude, radius_km: CONFIG.DEFAULT_RADIUS_KM };
-            updateLocationStatus(`Using your location: ${latitude.toFixed(3)}, ${longitude.toFixed(3)}`);
-            showStatus('Location set. Capture to classify & match.', 'success');
+            updateLocationStatus(`GPS: ${latitude.toFixed(3)}, ${longitude.toFixed(3)}`);
+            elements.locStatus.classList.replace("text-slate-400", "text-gatwick-blue");
+            showStatus('Location set successfully.', 'success');
         },
         (err) => {
             console.error('Geo error', err);
@@ -417,7 +462,7 @@ function ensureDefaultLocation() {
             lon: window.DEFAULT_OBSERVER.lon,
             radius_km: window.DEFAULT_OBSERVER.radius_km || CONFIG.DEFAULT_RADIUS_KM,
         };
-        updateLocationStatus(`Using default: ${state.location.lat.toFixed(3)}, ${state.location.lon.toFixed(3)}`);
+        updateLocationStatus(`Default: ${state.location.lat.toFixed(3)}, ${state.location.lon.toFixed(3)}`);
     }
 }
 
@@ -431,22 +476,16 @@ async function handleCapture() {
     elements.captureBtn.disabled = true;
     elements.clearBtn.disabled = true;
     
-    // Show loading state
-    elements.resultBox.innerHTML = `
-        <div>
-            <div class="spinner"></div>
-            <p>Capturing burst and classifying...</p>
-        </div>
-    `;
-    elements.resultBox.classList.add('loading');
+    // Show loading UI
+    elements.resultsSection.classList.add('hidden');
+    elements.loadingOverlay.classList.remove('hidden');
+    elements.loadingOverlay.classList.add('flex');
     
     try {
-        // Capture burst
         showStatus(`Capturing ${CONFIG.NUM_FRAMES} frames...`, 'info');
         const frames = await captureBurst(CONFIG.NUM_FRAMES, CONFIG.FRAME_INTERVAL);
         clearFrameCounter();
         
-        // Classify
         await classifyFrames(frames);
     } catch (error) {
         console.error('Capture error:', error);
@@ -456,6 +495,8 @@ async function handleCapture() {
         state.isCapturing = false;
         elements.captureBtn.disabled = false;
         elements.clearBtn.disabled = false;
+        elements.loadingOverlay.classList.add('hidden');
+        elements.loadingOverlay.classList.remove('flex');
     }
 }
 
@@ -464,16 +505,7 @@ async function handleCapture() {
  */
 function handleClear() {
     state.lastClassification = null;
-    elements.resultBox.innerHTML = `
-        <div class="empty-state">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path>
-                <circle cx="12" cy="13" r="4"></circle>
-            </svg>
-            <p>Awaiting classification...</p>
-        </div>
-    `;
-    elements.resultBox.classList.remove('empty-state', 'loading');
+    elements.resultsSection.classList.add('hidden');
     clearFrameCounter();
     showStatus('Results cleared', 'info');
 }
@@ -497,7 +529,6 @@ function handleUnload() {
  * Initialize the application
  */
 async function init() {
-    // Attach event listeners
     elements.captureBtn.addEventListener('click', handleCapture);
     elements.clearBtn.addEventListener('click', handleClear);
     elements.fileInput.addEventListener('change', handleFileUpload);
@@ -506,23 +537,19 @@ async function init() {
     elements.modeSandbox.addEventListener('click', () => setMode('SANDBOX'));
     window.addEventListener('beforeunload', handleUnload);
 
-    // Check browser support
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
         showStatus('Your browser does not support webcam access', 'error');
         elements.captureBtn.disabled = true;
         return;
     }
 
-    // Initialize webcam
     await initWebcam();
 
-    // Default mode and location status
     setMode('OPENSKY');
     ensureDefaultLocation();
     if (!state.location) {
-        updateLocationStatus('No location yet; click "Use My Location" or rely on default LGW');
+        updateLocationStatus('No location set');
     }
 }
 
-// Start the app when the page loads
 document.addEventListener('DOMContentLoaded', init);

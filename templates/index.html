@@ -2,452 +2,212 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>✈️ Aircraft Detection System</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Aircraft Detection | Gatwick GO!</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        gatwick: {
+                            blue: '#1e3877',
+                            red: '#e60000',
+                            light: '#f8f9fa'
+                        }
+                    }
+                }
+            }
+        }
+    </script>
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            padding: 20px;
-        }
-
-        .container {
-            background: white;
-            border-radius: 16px;
-            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
-            max-width: 900px;
-            width: 100%;
-            padding: 40px;
-            overflow: hidden;
-        }
-
-        .header {
-            text-align: center;
-            margin-bottom: 40px;
-        }
-
-        .header h1 {
-            font-size: 32px;
-            color: #333;
-            margin-bottom: 8px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 12px;
-        }
-
-        .header p {
-            color: #666;
-            font-size: 16px;
-        }
-
-        .content {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 30px;
-            align-items: start;
-        }
-
-        .webcam-section {
-            display: flex;
-            flex-direction: column;
-            gap: 16px;
-        }
-
-        .webcam-label {
-            font-weight: 600;
-            color: #333;
-            font-size: 14px;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-
-        #webcam-video {
-            width: 100%;
-            aspect-ratio: 4 / 3;
-            background: #f0f0f0;
-            border-radius: 12px;
-            border: 2px solid #e0e0e0;
-            max-height: 400px;
-            object-fit: cover;
-        }
-
-        .hidden {
-            display: none;
-        }
-
-        #canvas {
-            display: none;
-        }
-
-        .button-group {
-            display: flex;
-            gap: 12px;
-        }
-
-        .controls-row {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 10px;
-            align-items: center;
-            margin-bottom: 12px;
-        }
-
-        .segmented {
-            display: inline-flex;
-            border: 1px solid #ddd;
-            border-radius: 10px;
-            overflow: hidden;
-        }
-
-        .segmented button {
-            border: none;
-            padding: 10px 14px;
-            background: #f8f8f8;
-            color: #444;
-            text-transform: none;
-            letter-spacing: 0;
-            font-weight: 600;
-        }
-
-        .segmented button.active {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: #fff;
-        }
-
-        .btn-small {
-            padding: 10px 14px;
-            font-size: 14px;
-            flex: 0 0 auto;
-        }
-
-        .loc-status {
-            font-size: 13px;
-            color: #555;
-        }
-
-        button {
-            padding: 12px 24px;
-            font-size: 16px;
-            font-weight: 600;
-            border: none;
-            border-radius: 8px;
-            cursor: pointer;
-            transition: all 0.3s ease;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-
-        .btn-primary {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            flex: 1;
-        }
-
-        .btn-primary:hover:not(:disabled) {
-            transform: translateY(-2px);
-            box-shadow: 0 10px 20px rgba(102, 126, 234, 0.3);
-        }
-
-        .btn-primary:active:not(:disabled) {
-            transform: translateY(0);
-        }
-
-        .btn-primary:disabled {
-            opacity: 0.6;
-            cursor: not-allowed;
-        }
-
-        .btn-secondary {
-            background: #f0f0f0;
-            color: #333;
-            flex: 1;
-        }
-
-        .btn-secondary:hover:not(:disabled) {
-            background: #e0e0e0;
-        }
-
-        .results-section {
-            display: flex;
-            flex-direction: column;
-            gap: 16px;
-        }
-
-        .results-label {
-            font-weight: 600;
-            color: #333;
-            font-size: 14px;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-
-        .result-box {
-            background: #f8f9fa;
-            border-radius: 12px;
-            padding: 20px;
-            border: 2px solid #e9ecef;
-            min-height: 300px;
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-            align-items: center;
-            text-align: center;
-            color: #999;
-        }
-
-        .result-box.loading {
-            animation: pulse 1.5s ease-in-out infinite;
-        }
-
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.6; }
-        }
-
-        .result-content {
-            display: flex;
-            flex-direction: column;
-            gap: 16px;
-            width: 100%;
-        }
-
-        .result-item {
-            text-align: left;
-            background: white;
-            padding: 16px;
-            border-radius: 8px;
-            border-left: 4px solid #667eea;
-        }
-
-        .result-label {
-            font-size: 12px;
-            color: #999;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            font-weight: 600;
-            margin-bottom: 4px;
-        }
-
-        .result-value {
-            font-size: 20px;
-            font-weight: 700;
-            color: #333;
-        }
-
-        .result-subtext {
-            font-size: 13px;
-            color: #666;
-            margin-top: 4px;
-        }
-
-        .cues-list {
-            list-style: none;
-            display: flex;
-            flex-direction: column;
-            gap: 8px;
-            margin-top: 8px;
-        }
-
-        .cues-list li {
-            font-size: 13px;
-            color: #555;
-            padding: 6px 0;
-            border-bottom: 1px solid #eee;
-        }
-
-        .cues-list li:last-child {
-            border-bottom: none;
-        }
-
-        .cues-list li::before {
-            content: "→ ";
-            color: #667eea;
-            font-weight: 600;
-            margin-right: 6px;
-        }
-
-        .status-message {
-            padding: 12px 16px;
-            border-radius: 8px;
-            font-size: 14px;
-            font-weight: 500;
-            margin-bottom: 12px;
-            display: none;
-        }
-
-        .status-message.show {
-            display: block;
-        }
-
-        .status-message.success {
-            background: #d4edda;
-            color: #155724;
-            border: 1px solid #c3e6cb;
-        }
-
-        .status-message.error {
-            background: #f8d7da;
-            color: #721c24;
-            border: 1px solid #f5c6cb;
-        }
-
-        .status-message.info {
-            background: #d1ecf1;
-            color: #0c5460;
-            border: 1px solid #bee5eb;
-        }
-
-        .spinner {
-            width: 40px;
-            height: 40px;
-            border: 4px solid #f0f0f0;
-            border-top-color: #667eea;
-            border-radius: 50%;
-            animation: spin 0.8s linear infinite;
-            margin: 0 auto 16px;
-        }
-
-        @keyframes spin {
-            to { transform: rotate(360deg); }
-        }
-
-        .frame-counter {
-            font-size: 12px;
-            color: #999;
-            text-align: center;
-            margin-top: 8px;
-        }
-
-        @media (max-width: 768px) {
-            .container {
-                padding: 24px;
-            }
-
-            .header h1 {
-                font-size: 24px;
-            }
-
-            .content {
-                grid-template-columns: 1fr;
-                gap: 20px;
-            }
-
-            .results-section {
-                order: -1;
-            }
-
-            .result-box {
-                min-height: 200px;
-            }
-        }
-
-        .confidence-bar {
-            width: 100%;
-            height: 8px;
-            background: #e9ecef;
-            border-radius: 4px;
-            overflow: hidden;
-            margin-top: 8px;
-        }
-
-        .confidence-fill {
-            height: 100%;
-            background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
-            transition: width 0.3s ease;
-        }
-
-        .empty-state {
-            text-align: center;
-            color: #999;
-        }
-
-        .empty-state svg {
-            width: 48px;
-            height: 48px;
-            margin-bottom: 16px;
-            opacity: 0.5;
-        }
-
-        .frame-display {
-            font-size: 13px;
-            color: #666;
-            margin-top: 8px;
-            padding-top: 8px;
-            border-top: 1px solid #eee;
-            text-align: center;
-        }
+        ::-webkit-scrollbar { display: none; }
+        body { -ms-overflow-style: none; scrollbar-width: none; background-color: #e5e7eb; }
+        .app-container { min-height: 100vh; max-width: 480px; margin: 0 auto; background-color: #f8f9fa; box-shadow: 0 0 20px rgba(0,0,0,0.1); position: relative; overflow-x: hidden;}
+        video { object-fit: cover; border-radius: 1.5rem; }
+        
+        /* Toast notification animation */
+        .toast-enter { transform: translateY(-100%); opacity: 0; }
+        .toast-active { transform: translateY(0); opacity: 1; transition: all 0.3s ease-out; }
     </style>
 </head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h1>✈️ Aircraft Detection</h1>
-            <p>Capture a burst of photos and let AI identify the aircraft</p>
+<body class="text-slate-800 font-sans antialiased">
+
+<div class="app-container flex flex-col">
+    
+    <header class="bg-white pt-10 pb-4 px-6 flex items-center justify-between border-b border-gray-100 sticky top-0 z-10">
+        <div class="flex items-center space-x-2 border-l-4 border-gatwick-red pl-2">
+            <h1 class="text-xl font-bold tracking-tight text-slate-900 uppercase">Gatwick GO!</h1>
+        </div>
+        <button id="clear-btn" class="w-8 h-8 rounded-full border border-slate-200 flex items-center justify-center text-slate-400 hover:bg-slate-50 active:bg-slate-100 transition-colors">
+            <i class="fa-solid fa-rotate-right text-sm"></i>
+        </button>
+    </header>
+
+    <div id="status-message" class="absolute top-20 left-4 right-4 z-50 text-center py-2 px-4 rounded-lg text-sm font-semibold shadow-md toast-enter hidden">
         </div>
 
-        <div class="content">
-            <div class="webcam-section">
-                <div class="webcam-label">📹 Webcam Feed</div>
-                <div class="controls-row">
-                    <div class="segmented">
-                        <button id="mode-live" class="active" data-mode="OPENSKY">Live (OpenSky)</button>
-                        <button id="mode-sandbox" data-mode="SANDBOX">Sandbox</button>
+    <main class="flex-1 p-4 pb-24 overflow-y-auto space-y-5">
+
+        <div class="bg-white rounded-2xl p-4 shadow-sm border border-gray-50">
+            <div class="flex justify-between items-center mb-4 bg-slate-100 p-1 rounded-lg">
+                <button id="mode-live" class="flex-1 py-1.5 text-sm font-semibold rounded-md bg-white shadow-sm text-gatwick-blue transition-all">Live (OpenSky)</button>
+                <button id="mode-sandbox" class="flex-1 py-1.5 text-sm font-medium rounded-md text-slate-500 hover:text-slate-700 transition-all">Sandbox</button>
+            </div>
+            
+            <div class="flex items-center justify-between">
+                <div class="flex items-center space-x-3">
+                    <button id="loc-btn" class="w-10 h-10 rounded-full bg-blue-50 flex items-center justify-center text-gatwick-blue hover:bg-blue-100 transition-colors shrink-0">
+                        <i class="fa-solid fa-location-crosshairs"></i>
+                    </button>
+                    <div>
+                        <p class="text-sm font-semibold text-slate-700">Use My Location</p>
+                        <p class="text-xs text-slate-400" id="loc-status">Using default: LGW</p>
                     </div>
-                    <button id="loc-btn" class="btn-secondary btn-small">Use My Location</button>
-                    <div class="loc-status" id="loc-status">Using default: LGW</div>
                 </div>
-                <video id="webcam-video" muted autoplay playsinline></video>
-                <canvas id="canvas"></canvas>
-                <div class="button-group">
-                    <button id="capture-btn" class="btn-primary">📸 Capture & Classify</button>
-                    <button id="clear-btn" class="btn-secondary">🔄 Clear</button>
+            </div>
+        </div>
+
+        <div class="relative w-full aspect-[3/4] bg-slate-900 rounded-[1.5rem] overflow-hidden shadow-lg flex flex-col items-center justify-center">
+            <video id="webcam-video" muted autoplay playsinline class="absolute inset-0 w-full h-full"></video>
+            <canvas id="canvas" class="hidden"></canvas>
+            
+            <div id="loading-overlay" class="absolute inset-0 bg-slate-900/70 backdrop-blur-sm hidden flex-col items-center justify-center z-10 text-white transition-opacity">
+                <i class="fa-solid fa-circle-notch fa-spin text-4xl mb-3 text-gatwick-blue"></i>
+                <p class="font-medium animate-pulse">Classifying aircraft...</p>
+                <p id="frame-counter" class="text-xs text-slate-300 mt-2 font-mono"></p>
+            </div>
+            
+            <div class="absolute bottom-6 left-0 right-0 flex flex-col items-center space-y-4 px-6 z-0">
+                <button id="capture-btn" class="relative group outline-none">
+                    <div class="absolute inset-0 bg-white rounded-full opacity-20 scale-125 group-active:scale-110 transition-transform"></div>
+                    <div class="w-20 h-20 bg-white rounded-full border-4 border-slate-200 shadow-xl flex items-center justify-center flex-col text-gatwick-blue transform active:scale-95 transition-all">
+                        <i class="fa-solid fa-camera text-2xl mb-1"></i>
+                    </div>
+                </button>
+
+                <label for="file-input" class="bg-white/20 backdrop-blur-md border border-white/30 text-white px-5 py-2 rounded-full text-sm font-medium shadow-sm active:bg-white/30 transition-colors cursor-pointer">
+                    <i class="fa-solid fa-arrow-up-from-bracket mr-2"></i>Upload Photo
+                </label>
+                <input id="file-input" type="file" accept="image/jpeg,image/png" class="hidden">
+            </div>
+        </div>
+
+        <div id="results-section" class="hidden space-y-4">
+            <h2 class="text-sm font-bold text-slate-500 uppercase tracking-wider ml-1">Detection Results</h2>
+            
+            <div class="bg-gradient-to-br from-[#1e3877] to-[#2a4d9e] rounded-2xl p-5 text-white shadow-md relative overflow-hidden">
+                <div class="absolute top-0 right-0 p-3 opacity-10 transform translate-x-4 -translate-y-4">
+                    <i class="fa-solid fa-plane text-8xl"></i>
                 </div>
-                <div class="button-group">
-                    <label for="file-input" class="btn-secondary" style="text-align:center; cursor:pointer;">⬆️ Upload &amp; Classify</label>
-                    <input id="file-input" type="file" accept="image/jpeg,image/png" style="display:none;">
+                <div class="relative z-10">
+                    <span class="inline-block bg-white/20 text-white text-[10px] px-2 py-1 rounded-md font-bold uppercase tracking-wider mb-2 backdrop-blur-sm border border-white/10">Gemini Vision</span>
+                    <h3 id="resAirline" class="text-2xl font-bold tracking-tight mb-1 truncate">Airline</h3>
+                    <p id="resFamily" class="text-white/80 font-medium text-sm flex items-center truncate">
+                        <i class="fa-solid fa-plane-up mr-2 text-xs"></i> Aircraft Family
+                    </p>
                 </div>
-                <div class="frame-counter" id="frame-counter"></div>
             </div>
 
-            <div class="results-section">
-                <div class="results-label">🏅 Classification Results</div>
-                <div id="status-message" class="status-message"></div>
-                <div id="match-box" class="result-box empty-state" style="margin-bottom:12px;">
-                    <div>
-                        <p style="color:#666;">Provider & match info will appear here.</p>
-                    </div>
+            <div class="bg-white rounded-2xl p-4 shadow-sm border border-gray-100 flex items-center space-x-4">
+                <div class="w-12 h-12 bg-orange-50 rounded-full flex items-center justify-center text-gatwick-red shrink-0">
+                    <i class="fa-solid fa-radar text-lg"></i>
                 </div>
-                <div id="result-box" class="result-box empty-state">
-                    <div>
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path>
-                            <circle cx="12" cy="13" r="4"></circle>
-                        </svg>
-                        <p>Awaiting classification...</p>
+                <div class="flex-1 overflow-hidden">
+                    <p class="text-xs text-slate-400 font-bold uppercase tracking-wider mb-1">Live Flight Match</p>
+                    <div id="resFlightMatch" class="text-base font-bold text-slate-800 leading-tight truncate">
+                        Searching...
                     </div>
                 </div>
             </div>
+
+            <button onclick="toggleModal(true)" class="w-full bg-slate-100 hover:bg-slate-200 active:bg-slate-300 text-slate-700 py-3.5 rounded-xl font-bold text-sm transition-colors border border-slate-200">
+                View Advanced Analysis
+            </button>
+        </div>
+
+    </main>
+</div>
+
+<div id="detailsModal" class="fixed inset-0 z-50 hidden">
+    <div class="absolute inset-0 bg-slate-900/40 backdrop-blur-sm transition-opacity" onclick="toggleModal(false)"></div>
+    <div class="absolute bottom-0 left-0 right-0 w-full max-w-md mx-auto bg-white rounded-t-3xl shadow-2xl transform transition-transform duration-300 max-h-[85vh] flex flex-col">
+        
+        <div class="flex justify-center pt-3 pb-1">
+            <div class="w-12 h-1.5 bg-slate-200 rounded-full"></div>
+        </div>
+        
+        <div class="px-6 pb-4 pt-2 flex justify-between items-center border-b border-gray-100">
+            <h3 class="text-lg font-bold text-slate-800">Advanced Details</h3>
+            <button onclick="toggleModal(false)" class="w-8 h-8 bg-slate-100 rounded-full flex items-center justify-center text-slate-500 hover:bg-slate-200">
+                <i class="fa-solid fa-xmark"></i>
+            </button>
+        </div>
+        
+        <div class="p-6 overflow-y-auto flex-1 text-sm text-slate-600 space-y-6">
+            
+            <div>
+                <h4 class="font-bold text-slate-800 mb-3 flex items-center"><i class="fa-solid fa-brain mr-2 text-gatwick-blue"></i>AI Confidence</h4>
+                <div class="bg-slate-50 p-4 rounded-xl border border-slate-100 space-y-4">
+                    <div>
+                        <div class="flex justify-between mb-1.5">
+                            <span class="font-medium text-slate-600">Classification</span>
+                            <span id="modalConfidence" class="font-bold text-gatwick-blue">--%</span>
+                        </div>
+                        <div class="w-full bg-slate-200 rounded-full h-2">
+                            <div id="barConfidence" class="bg-gatwick-blue h-2 rounded-full transition-all duration-500" style="width: 0%"></div>
+                        </div>
+                    </div>
+                    <div>
+                        <div class="flex justify-between mb-1.5">
+                            <span class="font-medium text-slate-600">Flight Phase: <span id="modalPhase" class="text-slate-800">Unknown</span></span>
+                            <span id="modalPhaseConf" class="font-bold text-gatwick-red">--%</span>
+                        </div>
+                        <div class="w-full bg-slate-200 rounded-full h-2">
+                            <div id="barPhaseConf" class="bg-gatwick-red h-2 rounded-full transition-all duration-500" style="width: 0%"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div>
+                <h4 class="font-bold text-slate-800 mb-3 flex items-center"><i class="fa-solid fa-eye mr-2 text-gatwick-blue"></i>Extracted Visual Cues</h4>
+                <ul id="modalCues" class="bg-slate-50 border border-slate-100 rounded-xl p-4 space-y-2 text-slate-600">
+                    </ul>
+            </div>
+
+            <div>
+                <h4 class="font-bold text-slate-800 mb-3 flex items-center"><i class="fa-solid fa-server mr-2 text-gatwick-blue"></i>Provider Feed Data</h4>
+                <div class="bg-slate-900 text-green-400 p-4 rounded-xl font-mono text-xs overflow-x-auto leading-relaxed" id="modalFeedData">
+                    </div>
+            </div>
+            
+            <div class="text-center text-xs text-slate-400 pt-2 pb-4">
+                Processed from <span id="modalFrames" class="font-bold text-slate-500">0</span> burst frame(s).
+            </div>
+
         </div>
     </div>
+</div>
 
-    <script src="{{ url_for('static', filename='main.js') }}"></script>
-    <script>
-        window.DEFAULT_OBSERVER = {
-            lat: {{ default_observer_lat | tojson }},
-            lon: {{ default_observer_lon | tojson }},
-            radius_km: {{ default_radius_km | tojson }}
-        };
-    </script>
+<script src="{{ url_for('static', filename='main.js') }}"></script>
+<script>
+    window.DEFAULT_OBSERVER = {
+        lat: {{ default_observer_lat | tojson }},
+        lon: {{ default_observer_lon | tojson }},
+        radius_km: {{ default_radius_km | tojson }}
+    };
+
+    // Modal logic mapping helper
+    function toggleModal(show) {
+        const modal = document.getElementById('detailsModal');
+        if (show) {
+            modal.classList.remove('hidden');
+        } else {
+            modal.classList.add('hidden');
+        }
+    }
+</script>
 </body>
 </html>

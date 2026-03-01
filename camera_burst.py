@@ -110,6 +110,15 @@ def _best_phase_from_pred(pred: Dict) -> Tuple[str, float]:
     return phase, conf
 
 
+def _confidence_level(score: float) -> str:
+    """Map a 0-1 score to a coarse confidence bucket."""
+    if score >= 0.75:
+        return "high"
+    if score >= 0.5:
+        return "medium"
+    return "low"
+
+
 def _aggregate_predictions(preds: List[Dict], qualities: List[float], frame_indices: List[int]) -> Dict:
     """Merge multiple frame predictions into a single decision with uncertainty."""
     if not preds:
@@ -125,6 +134,9 @@ def _aggregate_predictions(preds: List[Dict], qualities: List[float], frame_indi
             "votes": [],
             "family_votes": [],
             "phase_votes": [],
+            "confidence_level": "low",
+            "family_confidence_level": "low",
+            "low_confidence": True,
         }
 
     q_norm = _normalize_quality(qualities)
@@ -159,14 +171,12 @@ def _aggregate_predictions(preds: List[Dict], qualities: List[float], frame_indi
             )
             total_raw_weight += raw_score
 
-        # enforce minimum confidence thresholds by down-weighting uncertain frames
-        if a_conf < MIN_CONFIDENCE_AIRLINE:
-            airline = "UNKNOWN"
-        if f_conf < MIN_CONFIDENCE_FAMILY:
-            family = "UNKNOWN"
+        # soften (but do not discard) low-confidence votes so we can still surface best guesses
+        airline_penalty = 0.6 if a_conf < MIN_CONFIDENCE_AIRLINE else 1.0
+        family_penalty = 0.7 if f_conf < MIN_CONFIDENCE_FAMILY else 1.0
 
-        a_weight = max(0.0, min(1.0, a_conf)) * q_weight
-        f_weight = max(0.0, min(1.0, f_conf)) * q_weight
+        a_weight = max(0.0, min(1.0, a_conf)) * q_weight * airline_penalty
+        f_weight = max(0.0, min(1.0, f_conf)) * q_weight * family_penalty
         p_weight = max(0.0, min(1.0, p_conf)) * q_weight
 
         airline_votes[airline] = airline_votes.get(airline, 0.0) + a_weight
@@ -189,12 +199,13 @@ def _aggregate_predictions(preds: List[Dict], qualities: List[float], frame_indi
     if family_votes:
         best_family, best_family_score = max(family_votes.items(), key=lambda kv: kv[1])
 
-    airline_conf = best_airline_score / total_airline_weight if total_airline_weight > 0 else 0.0
-    family_conf = best_family_score / total_family_weight if total_family_weight > 0 else 0.0
+    frames_used = len(preds)
+    airline_conf = min(1.0, best_airline_score / max(frames_used, 1))
+    family_conf = min(1.0, best_family_score / max(frames_used, 1))
     best_phase, best_phase_score = ("unknown", 0.0)
     if phase_votes:
         best_phase, best_phase_score = max(phase_votes.items(), key=lambda kv: kv[1])
-    phase_conf = best_phase_score / total_phase_weight if total_phase_weight > 0 else 0.0
+    phase_conf = min(1.0, best_phase_score / max(frames_used, 1))
     uncertainty = 1.0 - airline_conf
 
     fallback_used = False
@@ -204,7 +215,7 @@ def _aggregate_predictions(preds: List[Dict], qualities: List[float], frame_indi
         fb_airline, fb_score, fb_cues = raw_candidates[0]
         if fb_score > 0:
             best_airline = fb_airline
-            airline_conf = fb_score / total_raw_weight if total_raw_weight > 0 else fb_score
+            airline_conf = min(1.0, fb_score / max(frames_used, 1))
             uncertainty = 1.0 - airline_conf
             winning_cues = fb_cues
             fallback_used = True
@@ -222,6 +233,9 @@ def _aggregate_predictions(preds: List[Dict], qualities: List[float], frame_indi
         "phase": best_phase,
         "phase_confidence": round(phase_conf, 3),
         "uncertainty": round(uncertainty, 3),
+        "confidence_level": _confidence_level(airline_conf),
+        "family_confidence_level": _confidence_level(family_conf),
+        "low_confidence": airline_conf < MIN_CONFIDENCE_AIRLINE,
         "frames_used": len(preds),
         "source_frames": frame_indices,
         "cues": winning_cues,
