@@ -44,6 +44,11 @@ const tabs: Tab[] = [
   {
     label: "Collection",
     href: "/collection",
+    isActive: (pathname: string) =>
+      pathname === "/collection" ||
+      pathname.startsWith("/collection") ||
+      pathname === "/collections" ||
+      pathname.startsWith("/collections"),
     icon: (active: boolean) => (
       <svg
         className="block h-6 w-6 shrink-0"

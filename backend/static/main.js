@@ -129,6 +129,70 @@ const PROGRESS_STORAGE_KEYS = {
     REDEEMED: 'gatwick-go-redeemed',
     TICKET_SESSION: 'gatwick-go-ticket-session',
 };
+const SHARED_PROGRESS_COOKIE = 'gatwick-go-session-progress';
+const SHARED_COLLECTION_LIMIT = 24;
+
+function readCookie(name) {
+    if (typeof document === 'undefined') return null;
+    const prefix = `${name}=`;
+    const cookies = document.cookie.split(';').map((entry) => entry.trim());
+    for (const cookie of cookies) {
+        if (cookie.startsWith(prefix)) {
+            return cookie.slice(prefix.length);
+        }
+    }
+    return null;
+}
+
+function writeCookie(name, value) {
+    if (typeof document === 'undefined') return;
+    document.cookie = `${name}=${value}; path=/; SameSite=Lax`;
+}
+
+function clearCookie(name) {
+    if (typeof document === 'undefined') return;
+    document.cookie = `${name}=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax`;
+}
+
+function readSharedProgressCookie() {
+    const raw = readCookie(SHARED_PROGRESS_COOKIE);
+    if (!raw) return null;
+    try {
+        return JSON.parse(decodeURIComponent(raw));
+    } catch (err) {
+        console.warn('Could not parse shared progress cookie', err);
+        return null;
+    }
+}
+
+function sanitizeSharedCard(card) {
+    if (!card || typeof card !== 'object') return null;
+    return {
+        id: card.id,
+        airline: card.airline,
+        planeType: card.planeType,
+        flightNumber: card.flightNumber,
+        rarity: card.rarity,
+        capturedAt: card.capturedAt,
+    };
+}
+
+function writeSharedProgressCookie(pointsTotal, card) {
+    const current = readSharedProgressCookie() || {};
+    const currentCollection = Array.isArray(current.collection) ? current.collection : [];
+    const nextCollection = card
+        ? [sanitizeSharedCard(card), ...currentCollection.filter((entry) => entry?.id !== card.id)].filter(Boolean).slice(0, SHARED_COLLECTION_LIMIT)
+        : currentCollection.slice(0, SHARED_COLLECTION_LIMIT);
+
+    writeCookie(
+        SHARED_PROGRESS_COOKIE,
+        encodeURIComponent(JSON.stringify({
+            points: Number.isFinite(pointsTotal) ? Number(pointsTotal) : 0,
+            collection: nextCollection,
+            updatedAt: Date.now(),
+        }))
+    );
+}
 
 function getProgressStorage() {
     return getBrowserStorage('sessionStorage') || getBrowserStorage('localStorage');
@@ -171,6 +235,7 @@ function clearProgressStorage() {
         getBrowserStorage('sessionStorage')?.removeItem(key);
         getBrowserStorage('localStorage')?.removeItem(key);
     });
+    clearCookie(SHARED_PROGRESS_COOKIE);
 }
 
 function upsertProgressCard(card) {
@@ -386,9 +451,7 @@ function buildCachedCaptureCard(apiResult) {
 
     const bestFlight = apiResult?.match?.best?.flight || {};
     const meta = getAirlineCardMeta(airlineName);
-    const stableId = apiResult.collection_item_key
-        ? `collection-${apiResult.collection_item_key}`
-        : `capture-${Date.now()}`;
+    const stableId = `capture-${apiResult.collection_item_key || 'session'}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 
     return {
         id: stableId,
@@ -403,6 +466,7 @@ function buildCachedCaptureCard(apiResult) {
         flightNumber: bestFlight.flight_number || bestFlight.callsign || 'UNKNOWN',
         rarity,
         capturedAt: new Date().toISOString(),
+        imageUrl: Array.isArray(state.lastFrames) && state.lastFrames.length > 0 ? state.lastFrames[0] : undefined,
     };
 }
 
@@ -416,10 +480,18 @@ function syncLocalProgressCache(apiResult) {
         cardCached = upsertProgressCard(card);
     }
 
+    writeSharedProgressCookie(nextPointsTotal, card);
+
     notifyParentOfSessionProgress({
         pointsAwarded: Number.isFinite(apiResult?.points_awarded) ? Number(apiResult.points_awarded) : 50,
         pointsTotal: nextPointsTotal,
         card,
+        capturedAirline: apiResult?.captured_airline || apiResult?.result?.airline || null,
+        capturedModel: apiResult?.captured_model || apiResult?.result?.aircraft_model || apiResult?.result?.aircraft_family || null,
+        flightNumber: apiResult?.match?.best?.flight?.flight_number || apiResult?.match?.best?.flight?.callsign || null,
+        imageUrl: card?.imageUrl || null,
+        confidence: Number.isFinite(apiResult?.result?.confidence) ? Number(apiResult.result.confidence) : null,
+        capturedAt: card?.capturedAt || new Date().toISOString(),
     });
 
     return { cardCached, pointsTotal: nextPointsTotal };

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import FlightCollectionCard from "@/components/FlightCollectionCard";
 import {
   ALL_PLANE_SLOTS,
   AIRLINE_MODELS,
@@ -12,6 +13,7 @@ import {
   type PlaneSlot,
 } from "@/lib/data";
 import { getCollection, subscribeToProgressStore } from "@/lib/store";
+import { readProgressSnapshot, subscribeToProgressPolling } from "@/lib/progressSync";
 
 type RarityFilter = "all" | "common" | "rare" | "shiny";
 type SortMode = "airline" | "alpha" | "collected";
@@ -58,12 +60,32 @@ export default function CollectionPage() {
 
   useEffect(() => {
     const sync = () => {
-      setCollection(getCollection());
+      setCollection(readProgressSnapshot().collection);
     };
 
     sync();
-    return subscribeToProgressStore(sync);
+    const unsubscribeStore = subscribeToProgressStore(sync);
+    const unsubscribePolling = subscribeToProgressPolling(sync);
+    return () => {
+      unsubscribeStore();
+      unsubscribePolling();
+    };
   }, []);
+
+  const filteredCaptures = useMemo(() => {
+    const next = collection.filter((card) => {
+      if (filter === "all") return true;
+      return card.rarity === filter;
+    });
+
+    next.sort((left, right) => {
+      const leftTime = new Date(left.capturedAt).getTime();
+      const rightTime = new Date(right.capturedAt).getTime();
+      return rightTime - leftTime;
+    });
+
+    return next;
+  }, [collection, filter]);
 
   const slotState = useMemo(() => {
     const latestCardBySlot = new Map<string, PlaneCard>();
@@ -208,6 +230,33 @@ export default function CollectionPage() {
             </p>
           </button>
         ))}
+      </section>
+
+      <section className="rounded-[24px] bg-white p-4 shadow-sm ring-1 ring-black/5">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <p className="text-[11px] uppercase tracking-[0.22em] text-gray-400">Session</p>
+            <h2 className="text-lg font-bold text-gatwick-dark">Captured Flights</h2>
+          </div>
+          <div className="rounded-full bg-gatwick-light px-3 py-2 text-xs font-semibold text-gatwick-dark">
+            {filteredCaptures.length} shown
+          </div>
+        </div>
+
+        {filteredCaptures.length === 0 ? (
+          <div className="mt-4 rounded-[22px] bg-gatwick-light px-4 py-10 text-center">
+            <p className="text-sm font-semibold text-gatwick-dark">No session captures yet</p>
+            <p className="mt-1 text-xs text-gray-500">
+              Record aircraft with Gemini and every capture in this session will appear here.
+            </p>
+          </div>
+        ) : (
+          <div className="mt-4 grid grid-cols-2 gap-3">
+            {filteredCaptures.map((card) => (
+              <FlightCollectionCard key={card.id} card={card} />
+            ))}
+          </div>
+        )}
       </section>
 
       <section className="rounded-[24px] bg-white p-4 shadow-sm ring-1 ring-black/5">

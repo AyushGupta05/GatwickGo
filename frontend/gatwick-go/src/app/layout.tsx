@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import BottomNav from "@/components/BottomNav";
+import SessionCaptureBridge from "@/components/SessionCaptureBridge";
 import { AuthProvider } from "@/lib/auth";
 import AuthGuard from "@/components/AuthGuard";
 
@@ -33,6 +34,7 @@ export default function RootLayout({
       <body className="antialiased">
         <AuthProvider>
           <AuthGuard>
+            <SessionCaptureBridge />
             <div className="mx-auto max-w-[430px] min-h-dvh relative bg-background">
               <main className="pb-24 safe-top">
                 {children}

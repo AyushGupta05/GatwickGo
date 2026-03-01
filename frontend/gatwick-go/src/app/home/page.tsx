@@ -11,6 +11,7 @@ import {
   getPointsToNextMilestone,
   getMilestoneProgress,
   getCollection,
+  subscribeToProgressStore,
 } from "@/lib/store";
 import { useAuth, AUTH_ON } from "@/lib/auth";
 
@@ -31,6 +32,7 @@ export default function Home() {
     };
 
     syncFromCache();
+    return subscribeToProgressStore(syncFromCache);
   }, []);
 
   return (

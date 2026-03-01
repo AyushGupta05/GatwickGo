@@ -3,7 +3,13 @@
 import { useEffect, useState } from "react";
 import { QRCodeSVG } from "qrcode.react";
 import { getAvailableRewards, type Reward } from "@/lib/data";
-import { getPoints, getRedeemedRewards, redeemReward } from "@/lib/store";
+import {
+  getPoints,
+  getRedeemedRewards,
+  redeemReward,
+  subscribeToProgressStore,
+} from "@/lib/store";
+import { readProgressSnapshot, subscribeToProgressPolling } from "@/lib/progressSync";
 import { useAuth } from "@/lib/auth";
 
 const PRESET_REWARDS = getAvailableRewards();
@@ -25,8 +31,19 @@ export default function ShopPage() {
   const rewards = PRESET_REWARDS;
 
   useEffect(() => {
-    setPoints(getPoints());
-    setRedeemed(getRedeemedRewards());
+    const sync = () => {
+      const snapshot = readProgressSnapshot();
+      setPoints(snapshot.points);
+      setRedeemed(snapshot.redeemed);
+    };
+
+    sync();
+    const unsubscribeStore = subscribeToProgressStore(sync);
+    const unsubscribePolling = subscribeToProgressPolling(sync);
+    return () => {
+      unsubscribeStore();
+      unsubscribePolling();
+    };
   }, []);
 
   const openRewardModal = (reward: Reward, promoCode: string) => {

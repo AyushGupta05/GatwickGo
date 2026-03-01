@@ -3,12 +3,11 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import {
-  addPointsAmount,
   getTicketSession,
   getSessionTimeRemaining,
-  upsertCollectionCard,
   clearTicketSession,
   TicketSession,
+  syncSessionCapture,
 } from "@/lib/store";
 
 function formatTime(ms: number): string {
@@ -22,7 +21,7 @@ function formatTime(ms: number): string {
 export default function ModelPage() {
   const [session, setSession] = useState<TicketSession | null>(null);
   const [remaining, setRemaining] = useState(0);
-  const modelUrl = "http://localhost:5000/";
+  const [modelUrl, setModelUrl] = useState("http://localhost:5000/");
 
   useEffect(() => {
     const sync = () => {
@@ -37,28 +36,22 @@ export default function ModelPage() {
   }, []);
 
   useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const nextUrl =
+      process.env.NEXT_PUBLIC_MODEL_ORIGIN ||
+      `${window.location.protocol}//${window.location.hostname}:5000/`;
+    setModelUrl(nextUrl);
+  }, []);
+
+  useEffect(() => {
     const handleSessionProgress = (event: MessageEvent) => {
       const message = event.data;
       if (!message || message.type !== "gatwick-go-session-progress") {
         return;
       }
 
-      const payload = message.payload ?? {};
-      const card = payload.card;
-      const awardedPoints =
-        typeof payload.pointsAwarded === "number" ? payload.pointsAwarded : 0;
-
-      if (card && typeof card === "object" && typeof card.id === "string") {
-        const isNewCard = upsertCollectionCard(card);
-        if (isNewCard && awardedPoints > 0) {
-          addPointsAmount(awardedPoints);
-        }
-        return;
-      }
-
-      if (awardedPoints > 0) {
-        addPointsAmount(awardedPoints);
-      }
+      syncSessionCapture(message.payload ?? {});
     };
 
     window.addEventListener("message", handleSessionProgress);
